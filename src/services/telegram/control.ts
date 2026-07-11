@@ -78,7 +78,7 @@ async function callTg<T = unknown>(method: string, body: unknown): Promise<TgRes
 }
 
 function isFromAdmin(chatId?: number | string): boolean {
-  return chatId != null && String(chatId) === config.TELEGRAM_ADMIN_CHAT_ID;
+  return chatId != null && config.adminChatIds.includes(String(chatId));
 }
 
 /** Accept either a bare phone ("996...") or a full chatId ("996...@c.us"). */

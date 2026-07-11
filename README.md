@@ -124,7 +124,7 @@ npm run dev          # tsx watch, читает .env
 | `WAHA_SESSION` | `default` |
 | `WAHA_WEBHOOK_SECRET` | *(опционально)* секрет в пути вебхука |
 | `TELEGRAM_BOT_TOKEN` | токен бота |
-| `TELEGRAM_ADMIN_CHAT_ID` | chat_id администратора/группы |
+| `TELEGRAM_ADMIN_CHAT_ID` | chat_id администратора/группы (несколько — через запятую) |
 | `COMPANY_NAME`, `MANAGER_NAME`, `MANAGER_WHATSAPP` | данные агентства |
 | `ALLOWLIST` | *(опционально)* список номеров через запятую для теста |
 | `DATABASE_URL` | *(опционально)* Postgres для хранения диалогов между рестартами |

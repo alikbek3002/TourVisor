@@ -53,7 +53,7 @@ const EnvSchema = z.object({
 
   // --- Telegram (admin alerts) ---
   TELEGRAM_BOT_TOKEN: z.string().optional(),
-  /** Chat id (user or group) that receives operational alerts. */
+  /** Chat id(s) (comma-separated) that receive alerts and may control the bot. */
   TELEGRAM_ADMIN_CHAT_ID: z.string().optional(),
 
   // --- Business / handoff ---
@@ -87,6 +87,11 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
+const adminChatIds = (env.TELEGRAM_ADMIN_CHAT_ID ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 export const config = {
   ...env,
   isProd: env.NODE_ENV === 'production',
@@ -94,10 +99,12 @@ export const config = {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
+  /** Telegram chat ids (admins) that receive alerts and may control the bot. */
+  adminChatIds,
   features: {
     claude: Boolean(env.ANTHROPIC_API_KEY) && !env.DISABLE_AI,
     tourvisor: Boolean(env.TOURVISOR_AUTH_LOGIN && env.TOURVISOR_AUTH_PASS),
-    telegram: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_ADMIN_CHAT_ID),
+    telegram: Boolean(env.TELEGRAM_BOT_TOKEN) && adminChatIds.length > 0,
     postgres: Boolean(env.DATABASE_URL),
   },
 } as const;

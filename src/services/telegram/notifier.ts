@@ -42,17 +42,20 @@ export async function sendTelegram(
     logger.warn({ text: text.slice(0, 120) }, 'telegram not configured — alert dropped');
     return;
   }
-  const payload: SendMessagePayload = {
-    chat_id: opts.chatId ?? config.TELEGRAM_ADMIN_CHAT_ID!,
-    text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: true,
-    ...(opts.buttons ? { reply_markup: { inline_keyboard: opts.buttons } } : {}),
-  };
-  try {
-    await postJson(apiUrl('sendMessage'), payload, { retries: 2 });
-  } catch (err) {
-    logger.error({ err: (err as Error).message }, 'failed to send telegram alert');
+  const targets = opts.chatId ? [opts.chatId] : config.adminChatIds;
+  for (const chatId of targets) {
+    const payload: SendMessagePayload = {
+      chat_id: chatId,
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      ...(opts.buttons ? { reply_markup: { inline_keyboard: opts.buttons } } : {}),
+    };
+    try {
+      await postJson(apiUrl('sendMessage'), payload, { retries: 2 });
+    } catch (err) {
+      logger.error({ err: (err as Error).message, chatId }, 'failed to send telegram alert');
+    }
   }
 }
 
@@ -60,26 +63,36 @@ export async function sendTelegram(
  * Send a photo (e.g. the WAHA login QR code) to the admin chat via multipart
  * upload. Used so an operator can connect WhatsApp straight from Telegram.
  */
-export async function sendTelegramPhoto(photo: Uint8Array, caption?: string): Promise<void> {
+export async function sendTelegramPhoto(
+  photo: Uint8Array,
+  caption?: string,
+  chatId?: string,
+): Promise<void> {
   if (!config.features.telegram) {
     logger.warn('telegram not configured — photo dropped');
     return;
   }
-  try {
-    const form = new FormData();
-    form.set('chat_id', config.TELEGRAM_ADMIN_CHAT_ID!);
-    if (caption) {
-      form.set('caption', caption);
-      form.set('parse_mode', 'HTML');
+  const targets = chatId ? [chatId] : config.adminChatIds;
+  for (const target of targets) {
+    try {
+      const form = new FormData();
+      form.set('chat_id', target);
+      if (caption) {
+        form.set('caption', caption);
+        form.set('parse_mode', 'HTML');
+      }
+      form.set('photo', new Blob([photo], { type: 'image/png' }), 'qr.png');
+      const res = await fetch(apiUrl('sendPhoto'), { method: 'POST', body: form });
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        logger.error(
+          { status: res.status, body: t.slice(0, 200), chatId: target },
+          'telegram sendPhoto failed',
+        );
+      }
+    } catch (err) {
+      logger.error({ err: (err as Error).message, chatId: target }, 'failed to send telegram photo');
     }
-    form.set('photo', new Blob([photo], { type: 'image/png' }), 'qr.png');
-    const res = await fetch(apiUrl('sendPhoto'), { method: 'POST', body: form });
-    if (!res.ok) {
-      const t = await res.text().catch(() => '');
-      logger.error({ status: res.status, body: t.slice(0, 200) }, 'telegram sendPhoto failed');
-    }
-  } catch (err) {
-    logger.error({ err: (err as Error).message }, 'failed to send telegram photo');
   }
 }
 
