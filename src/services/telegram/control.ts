@@ -112,7 +112,9 @@ export async function handleTelegramUpdate(update: TgUpdate): Promise<void> {
 }
 
 async function handleCommand(message: TgMessage): Promise<void> {
-  if (!isFromAdmin(message.chat?.id)) return; // silently ignore non-admins
+  const from = message.chat?.id;
+  if (!isFromAdmin(from)) return; // silently ignore non-admins
+  const to = String(from); // reply only to the admin who sent the command
   const text = (message.text ?? '').trim();
   if (!text.startsWith('/')) return;
 
@@ -122,26 +124,26 @@ async function handleCommand(message: TgMessage): Promise<void> {
   switch (cmd) {
     case '/start':
     case '/help':
-      await sendTelegram(HELP);
+      await sendTelegram(HELP, { chatId: to });
       return;
     case '/status':
-      await handleStatus();
+      await handleStatus(to);
       return;
     case '/resume':
-      await handleResume(parts[1]);
+      await handleResume(to, parts[1]);
       return;
     case '/pause':
-      await handlePause(parts[1], parts[2]);
+      await handlePause(to, parts[1], parts[2]);
       return;
     case '/qr':
-      await handleQr();
+      await handleQr(to);
       return;
     default:
-      await sendTelegram('Неизвестная команда. /help — список команд.');
+      await sendTelegram('Неизвестная команда. /help — список команд.', { chatId: to });
   }
 }
 
-async function handleStatus(): Promise<void> {
+async function handleStatus(to: string): Promise<void> {
   const { total, human } = conversations.stats();
   const session = await getSession();
   const status = session?.status ?? 'UNKNOWN';
@@ -159,34 +161,35 @@ async function handleStatus(): Promise<void> {
     ]
       .filter(Boolean)
       .join('\n'),
+    { chatId: to },
   );
 }
 
-async function handleResume(arg?: string): Promise<void> {
+async function handleResume(to: string, arg?: string): Promise<void> {
   if (!arg) {
-    await sendTelegram('Укажите номер: <code>/resume 996555123456</code>');
+    await sendTelegram('Укажите номер: <code>/resume 996555123456</code>', { chatId: to });
     return;
   }
-  const chatId = resolveChatId(arg);
-  const convo = conversations.get(chatId);
+  const clientChatId = resolveChatId(arg);
+  const convo = conversations.get(clientChatId);
   if (!convo) {
-    await sendTelegram(`Диалог не найден: ${chatId}`);
+    await sendTelegram(`Диалог не найден: ${clientChatId}`, { chatId: to });
     return;
   }
   conversations.returnToBot(convo);
-  await sendTelegram(`✅ Бот снова отвечает клиенту +${convo.phone}.`);
-  logger.info({ chatId }, 'bot resumed via telegram');
+  await sendTelegram(`✅ Бот снова отвечает клиенту +${convo.phone}.`, { chatId: to });
+  logger.info({ chatId: clientChatId }, 'bot resumed via telegram');
 }
 
-async function handlePause(arg?: string, minutesArg?: string): Promise<void> {
+async function handlePause(to: string, arg?: string, minutesArg?: string): Promise<void> {
   if (!arg) {
-    await sendTelegram('Укажите номер: <code>/pause 996555123456 [минуты]</code>');
+    await sendTelegram('Укажите номер: <code>/pause 996555123456 [минуты]</code>', { chatId: to });
     return;
   }
-  const chatId = resolveChatId(arg);
-  const convo = conversations.get(chatId);
+  const clientChatId = resolveChatId(arg);
+  const convo = conversations.get(clientChatId);
   if (!convo) {
-    await sendTelegram(`Диалог не найден: ${chatId}`);
+    await sendTelegram(`Диалог не найден: ${clientChatId}`, { chatId: to });
     return;
   }
   const minutes = Number(minutesArg);
@@ -194,28 +197,33 @@ async function handlePause(arg?: string, minutesArg?: string): Promise<void> {
   conversations.handToHuman(convo, muteMs);
   await sendTelegram(
     `⏸ Бот на паузе для +${convo.phone}${muteMs ? ` на ${minutes} мин` : ' (бессрочно)'}.`,
+    { chatId: to },
   );
-  logger.info({ chatId, muteMs }, 'bot paused via telegram');
+  logger.info({ chatId: clientChatId, muteMs }, 'bot paused via telegram');
 }
 
-async function handleQr(): Promise<void> {
+async function handleQr(to: string): Promise<void> {
   const qr = await fetchQrImage();
   if (qr) {
-    await sendTelegramPhoto(qr, '📲 Отсканируйте QR в WhatsApp → Связанные устройства.');
+    await sendTelegramPhoto(qr, '📲 Отсканируйте QR в WhatsApp → Связанные устройства.', to);
   } else {
-    await sendTelegram('QR недоступен — возможно, сессия уже подключена. Проверьте /status.');
+    await sendTelegram('QR недоступен — возможно, сессия уже подключена. Проверьте /status.', {
+      chatId: to,
+    });
   }
 }
 
 async function handleCallback(cq: TgCallbackQuery): Promise<void> {
-  if (!isFromAdmin(cq.message?.chat?.id)) {
+  const from = cq.message?.chat?.id;
+  if (!isFromAdmin(from)) {
     await callTg('answerCallbackQuery', { callback_query_id: cq.id, text: '⛔ Не авторизовано' });
     return;
   }
+  const to = String(from); // confirmation goes only to the admin who tapped
 
   const [action, ...rest] = (cq.data ?? '').split(':');
-  const chatId = rest.join(':');
-  const convo = chatId ? conversations.get(chatId) : undefined;
+  const clientChatId = rest.join(':');
+  const convo = clientChatId ? conversations.get(clientChatId) : undefined;
 
   let toast: string;
   if (!convo) {
@@ -223,12 +231,12 @@ async function handleCallback(cq: TgCallbackQuery): Promise<void> {
   } else if (action === 'resume') {
     conversations.returnToBot(convo);
     toast = '▶️ Бот включён';
-    await sendTelegram(`✅ Бот снова отвечает клиенту +${convo.phone}.`);
-    logger.info({ chatId }, 'bot resumed via telegram button');
+    await sendTelegram(`✅ Бот снова отвечает клиенту +${convo.phone}.`, { chatId: to });
+    logger.info({ chatId: clientChatId }, 'bot resumed via telegram button');
   } else if (action === 'pause') {
     conversations.handToHuman(convo, null);
     toast = '⏸ Пауза';
-    await sendTelegram(`⏸ Бот на паузе для +${convo.phone}.`);
+    await sendTelegram(`⏸ Бот на паузе для +${convo.phone}.`, { chatId: to });
   } else {
     toast = 'Неизвестное действие';
   }
