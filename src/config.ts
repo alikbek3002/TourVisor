@@ -80,6 +80,14 @@ const EnvSchema = z.object({
   DISABLE_AI: bool(false),
 
   /**
+   * Debounce window (ms) for batching client messages: after a message, wait
+   * this long for more before replying, so a client typing several messages in
+   * a row gets ONE coherent answer instead of a reply per line. The timer resets
+   * on each new message. 0 disables batching (reply immediately). E.g. 40000.
+   */
+  MESSAGE_DEBOUNCE_MS: z.coerce.number().int().nonnegative().default(0),
+
+  /**
    * Postgres connection string for durable conversation storage. When unset the
    * bot keeps conversations in memory only (lost on restart). On Railway, add a
    * Postgres service and reference its DATABASE_URL.

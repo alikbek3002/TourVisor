@@ -21,7 +21,56 @@ import type { InboundMessage } from '../services/waha/types.js';
 // Per-chat serialization: chain promises so each chat processes sequentially.
 const chatQueues = new Map<string, Promise<void>>();
 
+// Per-chat debounce buffer: collect a burst of messages and answer once.
+interface PendingBatch {
+  latest: InboundMessage; // keep latest metadata (name/phone/session)
+  texts: string[];
+  timer: NodeJS.Timeout;
+}
+const pendingBatches = new Map<string, PendingBatch>();
+
 export function enqueueInbound(msg: InboundMessage): void {
+  const debounceMs = config.MESSAGE_DEBOUNCE_MS;
+  if (debounceMs <= 0) {
+    schedule(msg);
+    return;
+  }
+
+  // Acknowledge delivery right away (blue ticks) even though we hold the reply.
+  void sendSeen(msg.chatId).catch(() => {});
+
+  const existing = pendingBatches.get(msg.chatId);
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.texts.push(msg.text);
+    existing.latest = msg;
+    existing.timer = armBatchTimer(msg.chatId, debounceMs);
+  } else {
+    pendingBatches.set(msg.chatId, {
+      latest: msg,
+      texts: [msg.text],
+      timer: armBatchTimer(msg.chatId, debounceMs),
+    });
+  }
+}
+
+function armBatchTimer(chatId: string, ms: number): NodeJS.Timeout {
+  const t = setTimeout(() => flushBatch(chatId), ms);
+  t.unref?.();
+  return t;
+}
+
+/** Fire the collected burst as a single combined message. */
+function flushBatch(chatId: string): void {
+  const batch = pendingBatches.get(chatId);
+  if (!batch) return;
+  pendingBatches.delete(chatId);
+  const combined: InboundMessage = { ...batch.latest, text: batch.texts.join('\n') };
+  schedule(combined);
+}
+
+/** Queue a message for sequential per-chat processing. */
+function schedule(msg: InboundMessage): void {
   const prev = chatQueues.get(msg.chatId) ?? Promise.resolve();
   const next = prev.then(() => handleInbound(msg)).catch((err) => {
     logger.error({ err: (err as Error).message, chatId: msg.chatId }, 'pipeline error');
