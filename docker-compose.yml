@@ -40,6 +40,7 @@ services:
     restart: unless-stopped
     depends_on:
       - waha
+      - db
     ports:
       - '8080:3000'
     environment:
@@ -64,6 +65,19 @@ services:
       MANAGER_NAME: ${MANAGER_NAME:-менеджер}
       MANAGER_WHATSAPP: ${MANAGER_WHATSAPP}
       ALLOWLIST: ${ALLOWLIST:-}
+      # Durable conversation storage (survives restarts).
+      DATABASE_URL: postgres://tourbot:tourbot@db:5432/tourbot
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tourbot
+      POSTGRES_PASSWORD: tourbot
+      POSTGRES_DB: tourbot
+    volumes:
+      - db-data:/var/lib/postgresql/data
 
 volumes:
   waha-sessions:
+  db-data:

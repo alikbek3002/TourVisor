@@ -67,7 +67,7 @@ export async function searchTours(
   return { status: 'ok', options: options.slice(0, RESULT_LIMIT) };
 }
 
-function buildSearchParams(
+export function buildSearchParams(
   input: SearchToursInput,
   departure: string,
   country: string,
@@ -75,6 +75,9 @@ function buildSearchParams(
   const { datefrom, dateto } = resolveDateRange(input.dateFrom, input.dateTo);
   const nightsfrom = input.nightsFrom ?? 7;
   const nightsto = input.nightsTo ?? Math.max(nightsfrom, nightsfrom + 3);
+
+  const childCount = Math.min(Math.max(input.children ?? 0, 0), 3); // Tourvisor supports up to 3 children
+  const ages = input.childrenAges ?? [];
 
   const params: Record<string, string | number | undefined> = {
     departure,
@@ -84,15 +87,17 @@ function buildSearchParams(
     nightsfrom,
     nightsto,
     adults: input.adults ?? 2,
-    child: input.children ?? 0,
+    child: childCount,
     currency: config.TOURVISOR_CURRENCY,
     pricetype: 0, // price per room
   };
 
-  const ages = input.childrenAges ?? [];
-  if (ages[0] != null) params.childage1 = ages[0];
-  if (ages[1] != null) params.childage2 = ages[1];
-  if (ages[2] != null) params.childage3 = ages[2];
+  // Tourvisor requires an age for every child (childage1..3). Default to 7 when
+  // the client didn't specify, otherwise the search errors out or returns nothing.
+  for (let i = 0; i < childCount; i++) {
+    const age = ages[i];
+    params[`childage${i + 1}`] = age != null && age >= 0 && age <= 17 ? age : 7;
+  }
 
   if (input.starsFrom) {
     params.stars = input.starsFrom;
@@ -118,7 +123,7 @@ async function pollUntilReady(requestId: string): Promise<boolean> {
   return false;
 }
 
-function mapResults(res: TvResultResponse): TourOption[] {
+export function mapResults(res: TvResultResponse): TourOption[] {
   const hotels = toArray(res.data?.result?.hotel);
   const options: TourOption[] = [];
 
@@ -155,7 +160,7 @@ function cheapestTour(hotel: TvHotel): TvTour | undefined {
   });
 }
 
-function normalizeCurrency(cur?: string): string | undefined {
+export function normalizeCurrency(cur?: string): string | undefined {
   if (!cur) return undefined;
   const map: Record<string, string> = { RUB: '₽', EUR: '€', USD: '$', KZT: '₸', BYN: 'Br' };
   return map[cur.toUpperCase()] ?? cur;
@@ -164,37 +169,50 @@ function normalizeCurrency(cur?: string): string | undefined {
 // --- date helpers -----------------------------------------------------------
 
 /** Convert ISO YYYY-MM-DD to Tourvisor's dd.mm.yyyy. */
-function isoToTv(iso: string): string | undefined {
+export function isoToTv(iso: string): string | undefined {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
   if (!m) return undefined;
   return `${m[3]}.${m[2]}.${m[1]}`;
 }
 
-/** Build a valid departure-date range (max 14-day span). Omit to use Tourvisor defaults. */
-function resolveDateRange(
+/** Parse ISO YYYY-MM-DD into a UTC Date (no local-timezone drift). */
+function parseIsoUtc(iso: string): Date | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return undefined;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/** Format a UTC Date as Tourvisor's dd.mm.yyyy. */
+function tvFromDate(d: Date): string {
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  return `${dd}.${mm}.${d.getUTCFullYear()}`;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Build a valid departure-date range (max 14-day span). Omit to use Tourvisor
+ * defaults. All math is done in UTC so results don't depend on the server's
+ * timezone.
+ */
+export function resolveDateRange(
   dateFrom?: string,
   dateTo?: string,
 ): { datefrom?: string; dateto?: string } {
-  const from = dateFrom ? isoToTv(dateFrom) : undefined;
+  const from = dateFrom ? parseIsoUtc(dateFrom) : undefined;
   if (!from) return {}; // let Tourvisor default (tomorrow .. +8)
-  let to = dateTo ? isoToTv(dateTo) : undefined;
-  if (!to && dateFrom) {
-    const d = new Date(dateFrom);
-    if (!Number.isNaN(d.getTime())) {
-      d.setDate(d.getDate() + 7);
-      to = isoToTv(d.toISOString());
-    }
+
+  let to = dateTo ? parseIsoUtc(dateTo) : undefined;
+  if (!to) {
+    to = new Date(from);
+    to.setUTCDate(to.getUTCDate() + 7);
   }
-  // Cap span at 14 days.
-  if (from && to) {
-    const [df, mf, yf] = from.split('.').map(Number) as [number, number, number];
-    const [dt, mt, yt] = to.split('.').map(Number) as [number, number, number];
-    const a = new Date(yf, mf - 1, df);
-    const b = new Date(yt, mt - 1, dt);
-    if ((b.getTime() - a.getTime()) / 86_400_000 > 14) {
-      a.setDate(a.getDate() + 14);
-      to = isoToTv(a.toISOString());
-    }
+  // Cap the span at 14 days.
+  if (to.getTime() - from.getTime() > 14 * DAY_MS) {
+    to = new Date(from);
+    to.setUTCDate(to.getUTCDate() + 14);
   }
-  return { datefrom: from, dateto: to };
+  return { datefrom: tvFromDate(from), dateto: tvFromDate(to) };
 }

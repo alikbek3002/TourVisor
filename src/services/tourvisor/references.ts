@@ -50,7 +50,7 @@ async function getCache(): Promise<Cache> {
   return inflight;
 }
 
-function normalize(s: string): string {
+export function normalize(s: string): string {
   return s.trim().toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]/gi, '');
 }
 

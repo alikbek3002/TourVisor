@@ -1,5 +1,6 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { conversations } from './core/conversation.js';
 import { createServer } from './server.js';
 
 async function main(): Promise<void> {
@@ -12,6 +13,20 @@ async function main(): Promise<void> {
   if (!config.features.claude) logger.warn('Claude disabled (no ANTHROPIC_API_KEY or DISABLE_AI=true)');
   if (!config.features.tourvisor) logger.warn('Tourvisor disabled (missing TOURVISOR_AUTH_LOGIN/PASS)');
   if (!config.features.telegram) logger.warn('Telegram alerts disabled (missing token/chat id)');
+  if (!config.features.postgres)
+    logger.warn('Persistence disabled (no DATABASE_URL) — conversations are in-memory only');
+
+  // Durable storage: load persisted conversations before we start taking messages.
+  try {
+    const { createPersistence } = await import('./core/persistence.js');
+    const persistence = createPersistence();
+    if (persistence) await conversations.init(persistence);
+  } catch (err) {
+    logger.error(
+      { err: (err as Error).message },
+      'persistence init failed — continuing in-memory only',
+    );
+  }
 
   const app = createServer();
 
@@ -32,9 +47,21 @@ async function main(): Promise<void> {
     logger.warn({ err: (err as Error).message }, 'WAHA bootstrap skipped/failed');
   }
 
+  // Wire up Telegram control (resume/pause/status/qr) via webhook or polling.
+  try {
+    const { initTelegramControl } = await import('./services/telegram/control.js');
+    await initTelegramControl();
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'Telegram control init skipped/failed');
+  }
+
   const shutdown = (signal: string) => {
     logger.info({ signal }, 'shutting down');
-    server.close(() => process.exit(0));
+    // Best-effort flush of pending conversation writes before we close.
+    void conversations
+      .flushNow()
+      .catch(() => {})
+      .finally(() => server.close(() => process.exit(0)));
     setTimeout(() => process.exit(1), 10_000).unref();
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

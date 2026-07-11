@@ -24,7 +24,7 @@ interface SendMessagePayload {
   reply_markup?: { inline_keyboard: InlineButton[][] };
 }
 
-function apiUrl(method: string): string {
+export function apiUrl(method: string): string {
   return `https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/${method}`;
 }
 
@@ -53,6 +53,33 @@ export async function sendTelegram(
     await postJson(apiUrl('sendMessage'), payload, { retries: 2 });
   } catch (err) {
     logger.error({ err: (err as Error).message }, 'failed to send telegram alert');
+  }
+}
+
+/**
+ * Send a photo (e.g. the WAHA login QR code) to the admin chat via multipart
+ * upload. Used so an operator can connect WhatsApp straight from Telegram.
+ */
+export async function sendTelegramPhoto(photo: Uint8Array, caption?: string): Promise<void> {
+  if (!config.features.telegram) {
+    logger.warn('telegram not configured — photo dropped');
+    return;
+  }
+  try {
+    const form = new FormData();
+    form.set('chat_id', config.TELEGRAM_ADMIN_CHAT_ID!);
+    if (caption) {
+      form.set('caption', caption);
+      form.set('parse_mode', 'HTML');
+    }
+    form.set('photo', new Blob([photo], { type: 'image/png' }), 'qr.png');
+    const res = await fetch(apiUrl('sendPhoto'), { method: 'POST', body: form });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      logger.error({ status: res.status, body: t.slice(0, 200) }, 'telegram sendPhoto failed');
+    }
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'failed to send telegram photo');
   }
 }
 
@@ -97,6 +124,10 @@ export async function notifyAdmin(alert: LeadAlert): Promise<void> {
     [{ text: '💬 Написать клиенту в WhatsApp', url: waMeLink(alert.clientPhone) }],
   ];
   if (alert.tourLink) buttons.push([{ text: '🔗 Открыть тур', url: alert.tourLink }]);
+  // Let the manager hand the conversation back to the bot with one tap.
+  buttons.push([
+    { text: '▶️ Вернуть диалог боту', callback_data: `resume:${alert.clientPhone}@c.us` },
+  ]);
 
   await sendTelegram(lines.join('\n'), { buttons });
 }

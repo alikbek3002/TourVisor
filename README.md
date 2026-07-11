@@ -127,8 +127,13 @@ npm run dev          # tsx watch, читает .env
 | `TELEGRAM_ADMIN_CHAT_ID` | chat_id администратора/группы |
 | `COMPANY_NAME`, `MANAGER_NAME`, `MANAGER_WHATSAPP` | данные агентства |
 | `ALLOWLIST` | *(опционально)* список номеров через запятую для теста |
+| `DATABASE_URL` | *(опционально)* Postgres для хранения диалогов между рестартами |
 
 > Railway задаёт `PORT` автоматически; бот его читает. В `WHATSAPP_HOOK_URL` и `WAHA_BASE_URL` порт `3000` — это внутренний порт, на котором Express слушает `PORT`. Если Railway выдаст другой `PORT`, укажите тот же номер в URL-ах (или задайте `PORT=3000` явно у сервиса бота).
+
+### Шаг 2½. Postgres (хранение диалогов)
+
+**New → Database → Add PostgreSQL.** Затем в сервисе бота добавьте переменную `DATABASE_URL` как ссылку на приватный URL базы (Variables → Add Reference → Postgres `DATABASE_URL`). Бот сам создаст таблицу при старте. Без этого шага активные диалоги и режим «менеджер» теряются при каждом редеплое.
 
 ### Шаг 3. Подключить WhatsApp
 
@@ -159,6 +164,17 @@ npm run dev          # tsx watch, читает .env
 
 Проверить можно так — при готовности клиента к покупке в чат придёт карточка с кнопкой «Написать клиенту».
 
+### Управление ботом из Telegram
+
+Бот принимает команды от админ-чата (через webhook, если задан `PUBLIC_URL`, иначе через long-polling):
+
+- `/status` — статус WhatsApp-сессии и диалогов;
+- `/resume <номер>` — вернуть диалог боту после передачи менеджеру;
+- `/pause <номер> [минуты]` — поставить бота на паузу по конкретному чату;
+- `/qr` — прислать QR для подключения WhatsApp.
+
+В каждой карточке эскалации есть кнопка **«▶️ Вернуть диалог боту»** — один тап возвращает авто-ответы. Когда WhatsApp-сессия не подключена, бот сам присылает QR-код в админ-чат (если Telegram настроен).
+
 ---
 
 ## Выбор модели Claude
@@ -171,22 +187,26 @@ npm run dev          # tsx watch, читает .env
 
 ```
 src/
-  index.ts                 старт: сервер + прогрев справочников + статус WAHA
-  server.ts                Express: /health + вебхук WAHA
+  index.ts                 старт: персистентность + сервер + справочники + WAHA + Telegram
+  server.ts                Express: /health + вебхуки WAHA и Telegram
   config.ts                валидация env (zod), фиче-флаги
   core/
-    conversation.ts        память диалогов (per-chat, режим бот/человек)
+    conversation.ts        память диалогов (per-chat, режим бот/человек) + write-behind в БД
+    persistence.ts         Postgres-хранилище диалогов (опционально, DATABASE_URL)
+    allowlist.ts           проверка разрешённых номеров (чистая функция)
     pipeline.ts            входящее → агент → ответ (сериализация по чату)
     types.ts               доменные типы (варианты туров)
   routes/
     health.ts              /health
     waha.webhook.ts        приём входящих от WAHA (ACK 200 сразу)
+    telegram.webhook.ts    приём апдейтов Telegram (управление ботом)
   services/
     claude/                агент (tool-use loop), инструменты, системный промпт
     tourvisor/             клиент API, кэш справочников, поиск туров
-    waha/                  клиент WhatsApp, парсинг вебхука, bootstrap
-    telegram/              уведомления администратору
+    waha/                  клиент WhatsApp, парсинг вебхука, bootstrap, QR
+    telegram/              уведомления + управление (resume/pause/status/qr)
   util/http.ts             fetch с таймаутом и ретраями
+test/                      юнит- и интеграционные тесты (vitest)
 Dockerfile, docker-compose.yml, railway.json
 ```
 
@@ -197,11 +217,13 @@ npm run dev        # локальная разработка (tsx watch)
 npm run build      # компиляция в dist/
 npm start          # запуск собранного
 npm run typecheck  # проверка типов
+npm run lint       # ESLint
+npm test           # юнит-тесты (vitest)
 ```
 
 ## Примечания и ограничения
 
-- **Хранилище диалогов** — в памяти процесса (одна инстанция). Для горизонтального масштабирования вынесите `core/conversation.ts` в Redis/Postgres.
+- **Хранилище диалогов** — при заданном `DATABASE_URL` диалоги и режим «бот/человек» сохраняются в Postgres и переживают рестарт (рабочий набор в памяти, запись в БД — write-behind). Без `DATABASE_URL` — только в памяти процесса (теряется при редеплое). Рассчитано на одну инстанцию Railway.
 - **WAHA persistence** — обязательно смонтируйте Volume в `/data`, иначе QR слетает при редеплое.
 - **Двойные вебхуки** — настраивайте вебхук либо через `WHATSAPP_HOOK_URL` у WAHA (рекомендуется), либо через `WAHA_AUTOREGISTER=true` у бота, но не одновременно.
 - **tourid живёт ~24 часа** — постоянных ссылок «на тур» у Tourvisor нет; для отеля используется `fulldesclink`, финальную бронь оформляет менеджер.

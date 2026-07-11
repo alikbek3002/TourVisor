@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../logger.js';
+import type { ConversationPersistence } from './persistence.js';
 
 /**
  * In-memory per-user conversation store.
@@ -41,6 +42,22 @@ const TTL_MS = 1000 * 60 * 60 * 24; // drop conversations idle > 24h
 
 class ConversationStore {
   private map = new Map<string, Conversation>();
+  private persistence: ConversationPersistence | null = null;
+  private dirty = new Set<string>();
+  private flushTimer: NodeJS.Timeout | null = null;
+
+  /** Attach durable storage: load existing conversations, then write-behind changes. */
+  async init(persistence: ConversationPersistence): Promise<void> {
+    await persistence.init();
+    const rows = await persistence.loadAll(nowMs() - TTL_MS);
+    for (const c of rows) this.map.set(c.chatId, c);
+    this.persistence = persistence;
+    logger.info({ loaded: rows.length }, 'conversations hydrated from persistence');
+    if (!this.flushTimer) {
+      this.flushTimer = setInterval(() => void this.flush(), 2000);
+      this.flushTimer.unref();
+    }
+  }
 
   get(chatId: string): Conversation | undefined {
     return this.map.get(chatId);
@@ -61,8 +78,10 @@ class ConversationStore {
         updatedAt: nowMs(),
       };
       this.map.set(chatId, convo);
+      this.markDirty(chatId);
     } else if (name && !convo.name) {
       convo.name = name;
+      this.markDirty(chatId);
     }
     return convo;
   }
@@ -106,6 +125,23 @@ class ConversationStore {
     this.touch(convo);
   }
 
+  /** Snapshot counts for status reporting. */
+  stats(): { total: number; human: number } {
+    let human = 0;
+    for (const c of this.map.values()) if (c.mode === 'human') human++;
+    return { total: this.map.size, human };
+  }
+
+  /** List chats currently handled by a human (for status reporting). */
+  listHuman(limit = 20): Array<{ phone: string; chatId: string }> {
+    const out: Array<{ phone: string; chatId: string }> = [];
+    for (const c of this.map.values()) {
+      if (c.mode === 'human') out.push({ phone: c.phone, chatId: c.chatId });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
   private touch(convo: Conversation): void {
     convo.updatedAt = nowMs();
     // Trim history but always keep it starting on a user turn so the API accepts it.
@@ -116,6 +152,33 @@ class ConversationStore {
         convo.messages.shift();
       }
     }
+    this.markDirty(convo.chatId);
+  }
+
+  private markDirty(chatId: string): void {
+    if (this.persistence) this.dirty.add(chatId);
+  }
+
+  /** Write pending changes to storage (write-behind, coalesced). */
+  private async flush(): Promise<void> {
+    if (!this.persistence || this.dirty.size === 0) return;
+    const ids = [...this.dirty];
+    this.dirty.clear();
+    for (const id of ids) {
+      const convo = this.map.get(id);
+      try {
+        if (convo) await this.persistence.upsert(convo);
+        else await this.persistence.delete(id);
+      } catch (err) {
+        this.dirty.add(id); // retry on the next tick
+        logger.debug({ err: (err as Error).message, chatId: id }, 'persist flush failed');
+      }
+    }
+  }
+
+  /** Force a flush now (e.g. on shutdown). */
+  async flushNow(): Promise<void> {
+    await this.flush();
   }
 
   /** Periodic cleanup of stale conversations. */
@@ -125,6 +188,7 @@ class ConversationStore {
     for (const [id, convo] of this.map) {
       if (convo.updatedAt < cutoff) {
         this.map.delete(id);
+        this.markDirty(id);
         removed++;
       }
     }

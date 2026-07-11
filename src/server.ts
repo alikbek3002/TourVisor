@@ -2,6 +2,7 @@ import express, { type Express, type Request } from 'express';
 import { logger } from './logger.js';
 import { healthRouter } from './routes/health.js';
 import { wahaWebhookRouter, webhookPath } from './routes/waha.webhook.js';
+import { telegramWebhookRouter } from './routes/telegram.webhook.js';
 
 /** Extend Express Request to carry the raw body (for webhook signature checks). */
 declare global {
@@ -35,6 +36,7 @@ export function createServer(): Express {
 
   app.use(healthRouter);
   app.use(wahaWebhookRouter);
+  app.use(telegramWebhookRouter);
   logger.info({ path: webhookPath() }, 'WAHA webhook endpoint mounted');
 
   return app;

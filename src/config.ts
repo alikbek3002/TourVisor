@@ -66,15 +66,20 @@ const EnvSchema = z.object({
   ALLOWLIST: z.string().optional(),
 
   DISABLE_AI: bool(false),
+
+  /**
+   * Postgres connection string for durable conversation storage. When unset the
+   * bot keeps conversations in memory only (lost on restart). On Railway, add a
+   * Postgres service and reference its DATABASE_URL.
+   */
+  DATABASE_URL: z.string().min(1).optional(),
 });
 
 const parsed = EnvSchema.safeParse(process.env);
 
 if (!parsed.success) {
-  // eslint-disable-next-line no-console
   console.error('❌ Invalid environment configuration:');
   for (const issue of parsed.error.issues) {
-    // eslint-disable-next-line no-console
     console.error(`  - ${issue.path.join('.') || '(root)'}: ${issue.message}`);
   }
   process.exit(1);
@@ -93,6 +98,7 @@ export const config = {
     claude: Boolean(env.ANTHROPIC_API_KEY) && !env.DISABLE_AI,
     tourvisor: Boolean(env.TOURVISOR_AUTH_LOGIN && env.TOURVISOR_AUTH_PASS),
     telegram: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_ADMIN_CHAT_ID),
+    postgres: Boolean(env.DATABASE_URL),
   },
 } as const;
 

@@ -1,6 +1,7 @@
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
-import { ensureSession, getSession } from './client.js';
+import { ensureSession, fetchQrImage, getSession } from './client.js';
+import { escapeHtml, sendTelegramPhoto } from '../telegram/notifier.js';
 import { webhookPath } from '../../routes/waha.webhook.js';
 
 /**
@@ -35,5 +36,21 @@ export async function bootstrapWaha(): Promise<void> {
       { status, dashboard: `${config.WAHA_BASE_URL}/dashboard` },
       '⚠️ WAHA session not connected. Open the WAHA dashboard, start the "default" session, and scan the QR code with WhatsApp → Linked devices.',
     );
+    // Best-effort: forward the login QR to the admin's Telegram so they can
+    // connect WhatsApp without opening the WAHA dashboard (handy on Railway).
+    if (config.features.telegram) {
+      try {
+        const qr = await fetchQrImage();
+        if (qr) {
+          await sendTelegramPhoto(
+            qr,
+            `📲 <b>Подключение WhatsApp</b>\nОткройте WhatsApp → Связанные устройства → Привязка устройства и отсканируйте этот QR, чтобы включить бота «${escapeHtml(config.COMPANY_NAME)}».`,
+          );
+          logger.info('WAHA login QR sent to admin Telegram');
+        }
+      } catch (err) {
+        logger.debug({ err: (err as Error).message }, 'QR forward to Telegram failed');
+      }
+    }
   }
 }

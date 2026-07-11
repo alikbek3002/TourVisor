@@ -1,6 +1,6 @@
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
-import { getJson, postJson } from '../../util/http.js';
+import { getJson, httpFetch, postJson } from '../../util/http.js';
 import type { InboundMessage, WahaSessionInfo, WahaWebhookEnvelope, WahaMessagePayload } from './types.js';
 
 /**
@@ -131,9 +131,25 @@ export async function ensureSession(webhookUrl: string): Promise<WahaSessionInfo
   }
 }
 
-/** Fetch the current QR (as a string/base64) so an operator can scan it. */
-export async function getQrAuthInfo(): Promise<string> {
-  return url(`/api/${config.WAHA_SESSION}/auth/qr?format=image`);
+/**
+ * Fetch the current login QR code as PNG bytes so an operator can scan it
+ * (we forward it to Telegram on startup when the session isn't connected).
+ * Returns null if the QR isn't available (already authenticated, or WAHA down).
+ */
+export async function fetchQrImage(): Promise<Uint8Array | null> {
+  try {
+    const res = await httpFetch(url(`/api/${config.WAHA_SESSION}/auth/qr?format=image`), {
+      method: 'GET',
+      headers: { ...headers(), Accept: 'image/png' },
+      retries: 1,
+      timeoutMs: 8000,
+    });
+    if (!res.ok) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  } catch (err) {
+    logger.debug({ err: (err as Error).message }, 'fetchQrImage failed');
+    return null;
+  }
 }
 
 // --- webhook parsing --------------------------------------------------------

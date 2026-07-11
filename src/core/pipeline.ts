@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { conversations } from './conversation.js';
+import { matchesAllowlist } from './allowlist.js';
 import { runAgentTurn } from '../services/claude/agent.js';
 import { searchTours } from '../services/tourvisor/search.js';
 import { notifyAdmin, notifyError } from '../services/telegram/notifier.js';
@@ -93,8 +94,5 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
 }
 
 function isAllowed(msg: InboundMessage): boolean {
-  if (config.allowlist.length === 0) return true;
-  return config.allowlist.some(
-    (a) => a === msg.phone || a === msg.chatId || msg.phone.endsWith(a.replace(/\D/g, '')),
-  );
+  return matchesAllowlist(msg.phone, msg.chatId, config.allowlist);
 }
