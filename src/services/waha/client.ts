@@ -102,6 +102,24 @@ export async function restartSession(): Promise<void> {
 }
 
 /**
+ * Request a WhatsApp pairing code for `phone` (digits only). The user enters it
+ * via WhatsApp → Linked devices → "Link with phone number instead" — no QR scan.
+ */
+export async function requestPairingCode(phone: string): Promise<string | null> {
+  try {
+    const res = await postJson<{ code?: string }>(
+      url(`/api/${config.WAHA_SESSION}/auth/request-code`),
+      { phoneNumber: phone },
+      { headers: headers(), retries: 1, timeoutMs: 20_000 },
+    );
+    return res?.code ?? null;
+  } catch (err) {
+    logger.debug({ err: (err as Error).message }, 'requestPairingCode failed');
+    return null;
+  }
+}
+
+/**
  * Ensure the session exists, is started, and is configured to POST webhooks to
  * our public URL. Uses the modern WAHA sessions API (create-or-update).
  * If the session isn't authenticated yet, the caller should surface the QR code.

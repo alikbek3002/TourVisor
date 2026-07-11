@@ -4,7 +4,13 @@ import { logger } from '../../logger.js';
 import { conversations } from '../../core/conversation.js';
 import { postJson } from '../../util/http.js';
 import { apiUrl, sendTelegram, sendTelegramPhoto } from './notifier.js';
-import { fetchQrImage, getSession, phoneToChatId, restartSession } from '../waha/client.js';
+import {
+  fetchQrImage,
+  getSession,
+  phoneToChatId,
+  requestPairingCode,
+  restartSession,
+} from '../waha/client.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -94,7 +100,8 @@ const HELP = [
   '/status — статус WhatsApp и диалогов',
   '/resume &lt;номер&gt; — вернуть диалог боту',
   '/pause &lt;номер&gt; [минуты] — пауза (без числа — бессрочно)',
-  '/qr — получить QR для подключения WhatsApp',
+  '/qr — QR для подключения WhatsApp',
+  '/code &lt;номер&gt; — код привязки WhatsApp (без сканирования)',
   '',
   'Номер в международном формате, напр. <code>996555123456</code>.',
 ].join('\n');
@@ -139,6 +146,9 @@ async function handleCommand(message: TgMessage): Promise<void> {
       return;
     case '/qr':
       await handleQr(to);
+      return;
+    case '/code':
+      await handleCode(to, parts[1]);
       return;
     default:
       await sendTelegram('Неизвестная команда. /help — список команд.', { chatId: to });
@@ -205,33 +215,80 @@ async function handlePause(to: string, arg?: string, minutesArg?: string): Promi
 }
 
 async function handleQr(to: string): Promise<void> {
-  // Make sure the session is scannable; restart it if it's stopped/failed.
-  const status = (await getSession())?.status;
-  if (status !== 'SCAN_QR_CODE' && status !== 'WORKING') {
-    await sendTelegram('Перезапускаю WhatsApp-сессию, подождите ~10 сек…', { chatId: to });
-    try {
-      await restartSession();
-    } catch {
-      /* ignore — we still try to fetch a QR below */
-    }
-    for (let i = 0; i < 8; i++) {
-      await sleep(2000);
-      if ((await getSession())?.status === 'SCAN_QR_CODE') break;
-    }
-  }
-  if ((await getSession())?.status === 'WORKING') {
+  let status = (await getSession())?.status;
+  if (status === 'WORKING') {
     await sendTelegram('✅ WhatsApp уже подключён — бот готов.', { chatId: to });
     return;
   }
-  const qr = await fetchQrImage();
-  if (qr) {
-    await sendTelegramPhoto(
-      qr,
-      '📲 Сканируйте: WhatsApp → Связанные устройства → Привязка устройства. Код живёт ~20 сек — не успели, отправьте /qr снова.',
-      to,
+  if (status !== 'SCAN_QR_CODE') {
+    await sendTelegram('Перезапускаю WhatsApp-сессию, подождите ~15 сек…', { chatId: to });
+    try {
+      await restartSession();
+    } catch {
+      /* ignore — we keep polling below */
+    }
+  }
+  // Poll until the QR is actually available (the session needs a moment after a restart).
+  for (let i = 0; i < 18; i++) {
+    status = (await getSession())?.status;
+    if (status === 'WORKING') {
+      await sendTelegram('✅ WhatsApp подключён — бот готов.', { chatId: to });
+      return;
+    }
+    if (status === 'SCAN_QR_CODE') {
+      const qr = await fetchQrImage();
+      if (qr) {
+        await sendTelegramPhoto(
+          qr,
+          '📲 Сканируйте: WhatsApp → Связанные устройства → Привязка устройства. Код живёт ~20 сек — не успели, отправьте /qr снова. Или привяжите кодом: /code &lt;номер&gt;.',
+          to,
+        );
+        return;
+      }
+    }
+    await sleep(2500);
+  }
+  await sendTelegram(
+    'Не удалось получить QR. Отправьте /qr ещё раз, либо привяжите по коду: /code &lt;номер&gt;.',
+    { chatId: to },
+  );
+}
+
+async function handleCode(to: string, phone?: string): Promise<void> {
+  const digits = (phone ?? '').replace(/\D/g, '');
+  if (digits.length < 8) {
+    await sendTelegram(
+      'Укажите номер бота: <code>/code 996700112233</code> (тот, что станет номером WhatsApp-бота).',
+      { chatId: to },
+    );
+    return;
+  }
+  let status = (await getSession())?.status;
+  if (status === 'WORKING') {
+    await sendTelegram('✅ WhatsApp уже подключён — бот готов.', { chatId: to });
+    return;
+  }
+  if (status !== 'SCAN_QR_CODE') {
+    await sendTelegram('Готовлю сессию, подождите ~15 сек…', { chatId: to });
+    try {
+      await restartSession();
+    } catch {
+      /* ignore */
+    }
+    for (let i = 0; i < 18; i++) {
+      await sleep(2500);
+      status = (await getSession())?.status;
+      if (status === 'SCAN_QR_CODE' || status === 'WORKING') break;
+    }
+  }
+  const code = await requestPairingCode(digits);
+  if (code) {
+    await sendTelegram(
+      `🔑 Код привязки: <code>${code}</code>\n\nНа телефоне с номером +${digits}:\nWhatsApp → Настройки → Связанные устройства → Привязка устройства → «Вводить номер телефона вместо этого» → введите этот код.\n\nКод действует несколько минут. Не сработал — отправьте /code снова.`,
+      { chatId: to },
     );
   } else {
-    await sendTelegram('QR пока недоступен, отправьте /qr ещё раз через несколько секунд.', {
+    await sendTelegram('Не удалось получить код. Попробуйте /code &lt;номер&gt; ещё раз или /qr.', {
       chatId: to,
     });
   }
