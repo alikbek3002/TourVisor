@@ -73,6 +73,11 @@ class ConversationStore {
     return undefined;
   }
 
+  /** Remove a conversation entirely — the client starts fresh on their next message. */
+  remove(chatId: string): void {
+    if (this.map.delete(chatId)) this.markDirty(chatId);
+  }
+
   getOrCreate(chatId: string, phone: string, name?: string): Conversation {
     let convo = this.map.get(chatId);
     if (!convo) {

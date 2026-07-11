@@ -100,6 +100,7 @@ const HELP = [
   '/pause &lt;номер&gt; [минуты] — пауза (без числа — бессрочно)',
   '/qr — QR для подключения WhatsApp',
   '/code &lt;номер&gt; — код привязки WhatsApp (без сканирования)',
+  '/reset &lt;номер&gt; — сбросить диалог клиента (начать с нуля)',
   '',
   'Номер в международном формате, напр. <code>996555123456</code>.',
 ].join('\n');
@@ -147,6 +148,9 @@ async function handleCommand(message: TgMessage): Promise<void> {
       return;
     case '/code':
       await handleCode(to, parts[1]);
+      return;
+    case '/reset':
+      await handleReset(to, parts[1]);
       return;
     default:
       await sendTelegram('Неизвестная команда. /help — список команд.', { chatId: to });
@@ -210,6 +214,22 @@ async function handlePause(to: string, arg?: string, minutesArg?: string): Promi
     { chatId: to },
   );
   logger.info({ chatId: clientChatId, muteMs }, 'bot paused via telegram');
+}
+
+async function handleReset(to: string, arg?: string): Promise<void> {
+  if (!arg) {
+    await sendTelegram('Укажите номер: <code>/reset 996555123456</code>', { chatId: to });
+    return;
+  }
+  const chatId = resolveChatId(arg);
+  const convo = conversations.get(chatId) ?? conversations.getByPhone(arg);
+  if (!convo) {
+    await sendTelegram(`Диалог не найден: ${chatId}`, { chatId: to });
+    return;
+  }
+  conversations.remove(convo.chatId);
+  await sendTelegram(`🧹 Диалог с +${convo.phone} сброшен — клиент начнёт с нуля.`, { chatId: to });
+  logger.info({ chatId: convo.chatId }, 'conversation reset via telegram');
 }
 
 async function handleQr(to: string): Promise<void> {
