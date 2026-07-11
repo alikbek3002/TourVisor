@@ -59,6 +59,17 @@ export const tools: Anthropic.Tool[] = [
           type: 'integer',
           description: 'Максимальный бюджет за тур (в валюте агентства), если клиент назвал.',
         },
+        priceFrom: {
+          type: 'integer',
+          description:
+            'Нижняя граница бюджета за тур. Ставь, когда клиент хочет подороже/премиум или назвал вилку — иначе бот покажет только самые дешёвые. Пример: «до 6000, отели получше» → priceFrom ≈ 3500–4000, priceTo 6000.',
+        },
+        sort: {
+          type: 'string',
+          enum: ['cheapest', 'premium'],
+          description:
+            'Как отбирать варианты. cheapest (по умолчанию) — самые бюджетные. premium — лучшие/подороже: клиент просит премиум, «подороже», отели высокого класса, или ищем аналог названным дорогим отелям. Тогда бот сортирует по рейтингу и цене от лучших, а не от дешёвых.',
+        },
       },
       required: ['country'],
       additionalProperties: false,
@@ -132,6 +143,8 @@ export interface SearchToursInput {
   starsFrom?: number;
   meal?: string;
   priceTo?: number;
+  priceFrom?: number;
+  sort?: 'cheapest' | 'premium';
 }
 
 export interface EscalateInput {

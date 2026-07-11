@@ -12,6 +12,8 @@ export interface TourOption {
   price: number;
   currency?: string;
   operator?: string;
+  /** Tourvisor hotel rating (0–5), used to rank premium picks. */
+  rating?: number;
   /** Tourvisor tour id (used to build a per-tour cart deep link). */
   tourId?: string;
   /** Public link a client can open. */

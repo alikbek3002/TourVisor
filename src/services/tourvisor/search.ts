@@ -53,11 +53,12 @@ export async function searchTours(
     requestid: requestId,
     type: 'result',
     page: 1,
-    onpage: 25,
+    onpage: 50, // wider set so premium/pricier options are available to rank
     nodescription: 1,
   });
 
-  const options = mapResults(result).slice(0, RESULT_LIMIT);
+  const ranked = rankOptions(mapResults(result), input.sort);
+  const options = ranked.slice(0, RESULT_LIMIT);
   if (options.length === 0) {
     return {
       status: 'empty',
@@ -67,6 +68,19 @@ export async function searchTours(
   }
   await enrichCartLinks(options);
   return { status: 'ok', options };
+}
+
+/**
+ * Order results for display. Default 'cheapest' keeps the price-ascending order
+ * (budget-conscious). 'premium' surfaces the best hotels first — by rating, then
+ * by price descending — so clients asking for pricier/higher-class options don't
+ * just get the cheapest ones again.
+ */
+function rankOptions(options: TourOption[], sort?: 'cheapest' | 'premium'): TourOption[] {
+  if (sort !== 'premium') return options; // mapResults already sorts by price asc
+  return [...options].sort(
+    (a, b) => (b.rating ?? 0) - (a.rating ?? 0) || b.price - a.price,
+  );
 }
 
 /** Replace each option's link with a per-tour Tourvisor module cart link (#tvcartid). */
@@ -119,8 +133,27 @@ export function buildSearchParams(
     params.starsbetter = 1;
   }
   if (input.priceTo) params.priceto = input.priceTo;
+  if (input.priceFrom) params.pricefrom = input.priceFrom;
+
+  const meal = mealCode(input.meal);
+  if (meal) {
+    params.meal = meal;
+    params.mealbetter = 1; // include this meal type or better
+  }
 
   return params;
+}
+
+/** Map a free-text meal preference to Tourvisor's numeric meal code (or undefined). */
+export function mealCode(meal?: string): number | undefined {
+  if (!meal) return undefined;
+  const m = meal.toLowerCase();
+  if (/ультра|uai|ultra/.test(m)) return 7; // ultra all inclusive
+  if (/всё включ|все включ|all\s*incl|\bai\b|инклюзив/.test(m)) return 5; // all inclusive
+  if (/полный пансион|\bfb\b|full board/.test(m)) return 4;
+  if (/полупансион|полу-?пансион|\bhb\b|half board/.test(m)) return 3;
+  if (/завтрак|\bbb\b|breakfast/.test(m)) return 2;
+  return undefined; // "любое"/неизвестно — не фильтруем
 }
 
 async function pollUntilReady(requestId: string): Promise<boolean> {
@@ -158,6 +191,7 @@ export function mapResults(res: TvResultResponse): TourOption[] {
       price,
       currency: normalizeCurrency(best.currency),
       operator: best.operatorname,
+      rating: num(hotel.hotelrating),
       tourId: best.tourid,
       link: buildTourLink(hotel, best),
     });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildSearchParams } from '../src/services/tourvisor/search.js';
+import { buildSearchParams, mealCode } from '../src/services/tourvisor/search.js';
 
 describe('buildSearchParams', () => {
   it('defaults each child age to 7 when not provided', () => {
@@ -42,5 +42,40 @@ describe('buildSearchParams', () => {
     expect(p.stars).toBe(4);
     expect(p.starsbetter).toBe(1);
     expect(p.priceto).toBe(150000);
+  });
+
+  it('passes a price floor (priceFrom) so pricier options can surface', () => {
+    const p = buildSearchParams({ country: 'Турция', priceFrom: 4000, priceTo: 6000 }, '1', '4');
+    expect(p.pricefrom).toBe(4000);
+    expect(p.priceto).toBe(6000);
+  });
+
+  it('applies the meal filter when specified', () => {
+    const p = buildSearchParams({ country: 'Турция', meal: 'всё включено' }, '1', '4');
+    expect(p.meal).toBe(5);
+    expect(p.mealbetter).toBe(1);
+  });
+
+  it('leaves meal unset when not specified or unknown', () => {
+    expect(buildSearchParams({ country: 'Турция' }, '1', '4').meal).toBeUndefined();
+    expect(buildSearchParams({ country: 'Турция', meal: 'любое' }, '1', '4').meal).toBeUndefined();
+  });
+});
+
+describe('mealCode', () => {
+  it('maps common meal phrasings to Tourvisor codes', () => {
+    expect(mealCode('всё включено')).toBe(5);
+    expect(mealCode('все включено')).toBe(5);
+    expect(mealCode('all inclusive')).toBe(5);
+    expect(mealCode('ультра всё включено')).toBe(7);
+    expect(mealCode('полупансион')).toBe(3);
+    expect(mealCode('полный пансион')).toBe(4);
+    expect(mealCode('только завтрак')).toBe(2);
+  });
+
+  it('returns undefined for empty/unknown', () => {
+    expect(mealCode(undefined)).toBeUndefined();
+    expect(mealCode('любое')).toBeUndefined();
+    expect(mealCode('не важно')).toBeUndefined();
   });
 });
