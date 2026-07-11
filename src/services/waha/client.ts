@@ -119,6 +119,71 @@ export async function requestPairingCode(phone: string): Promise<string | null> 
   }
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Stop the WAHA session. */
+export async function stopSession(): Promise<void> {
+  await postJson(url(`/api/sessions/${config.WAHA_SESSION}/stop`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
+}
+
+/** Start the WAHA session. */
+export async function startSession(): Promise<void> {
+  await postJson(url(`/api/sessions/${config.WAHA_SESSION}/start`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
+}
+
+/** Log the session out — clears stored credentials (recovers a stale-creds login loop). */
+export async function logoutSession(): Promise<void> {
+  await postJson(url(`/api/sessions/${config.WAHA_SESSION}/logout`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
+}
+
+/**
+ * Bring the session to a scannable state and return the final status. Tries a
+ * plain restart first; if the session is stuck (e.g. stale credentials after the
+ * phone unlinked the device → STARTING/FAILED loop), it does a full
+ * stop → logout → start to clear the credentials.
+ */
+export async function ensureScannable(): Promise<string> {
+  const statusOf = async (): Promise<string | undefined> => (await getSession())?.status;
+  let st = await statusOf();
+  if (st === 'WORKING' || st === 'SCAN_QR_CODE') return st;
+
+  try {
+    await restartSession();
+  } catch {
+    /* ignore */
+  }
+  for (let i = 0; i < 10; i++) {
+    await sleep(2000);
+    st = await statusOf();
+    if (st === 'WORKING' || st === 'SCAN_QR_CODE') return st;
+  }
+
+  // Full recovery — clears stale credentials that keep the engine looping.
+  try {
+    await stopSession();
+  } catch {
+    /* ignore */
+  }
+  await sleep(1500);
+  try {
+    await logoutSession();
+  } catch {
+    /* ignore */
+  }
+  await sleep(1500);
+  try {
+    await startSession();
+  } catch {
+    /* ignore */
+  }
+  for (let i = 0; i < 12; i++) {
+    await sleep(2500);
+    st = await statusOf();
+    if (st === 'WORKING' || st === 'SCAN_QR_CODE') return st;
+  }
+  return st ?? 'UNKNOWN';
+}
+
 /**
  * Ensure the session exists, is started, and is configured to POST webhooks to
  * our public URL. Uses the modern WAHA sessions API (create-or-update).
