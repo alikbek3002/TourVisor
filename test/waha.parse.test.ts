@@ -57,6 +57,52 @@ describe('parseInbound', () => {
     );
     expect(msg?.name).toBe('Пётр');
   });
+
+  it('resolves the real phone + pushName for an @lid (privacy) chat', () => {
+    const msg = parseInbound(
+      envelope(
+        {
+          id: '1',
+          from: '35639789617196@lid',
+          fromMe: false,
+          body: 'Салам',
+          _data: {
+            pushName: 'Азамат',
+            key: { remoteJid: '35639789617196@lid', remoteJidAlt: '996770112233@s.whatsapp.net' },
+          },
+        },
+        'message',
+      ),
+    );
+    expect(msg?.chatId).toBe('35639789617196@lid'); // reply target stays the lid
+    expect(msg?.phone).toBe('996770112233'); // but the callable number is resolved
+    expect(msg?.name).toBe('Азамат');
+  });
+
+  it('excludes the bot\'s own JID when scanning for the client number', () => {
+    const env = {
+      event: 'message',
+      session: 'default',
+      me: { id: '996770172008@c.us' },
+      payload: {
+        id: '1',
+        from: '35639789617196@lid',
+        fromMe: false,
+        body: 'hi',
+        to: '996770172008@s.whatsapp.net', // bot's number — must be ignored
+        _data: { senderPn: '996555000111@s.whatsapp.net' },
+      },
+    } as unknown as WahaWebhookEnvelope;
+    const msg = parseInbound(env);
+    expect(msg?.phone).toBe('996555000111');
+  });
+
+  it('falls back to the lid digits when no real number is present', () => {
+    const msg = parseInbound(
+      envelope({ id: '1', from: '35639789617196@lid', fromMe: false, body: 'hi' }),
+    );
+    expect(msg?.phone).toBe('35639789617196');
+  });
 });
 
 describe('chatId helpers', () => {

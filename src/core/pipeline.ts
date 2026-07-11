@@ -56,6 +56,7 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
     await notifyAdmin({
       reason: 'manager_request',
       clientPhone: msg.phone,
+      clientChatId: msg.chatId,
       clientName: msg.name,
       summary: 'AI отключён — требуется ручной ответ',
       lastMessage: msg.text,
@@ -86,6 +87,7 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
     await notifyAdmin({
       reason: 'error',
       clientPhone: msg.phone,
+      clientChatId: msg.chatId,
       clientName: msg.name,
       summary: 'Бот не смог обработать запрос',
       lastMessage: msg.text,

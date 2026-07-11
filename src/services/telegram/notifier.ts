@@ -106,6 +106,8 @@ export interface LeadAlert {
   reason: 'buying_intent' | 'complaint' | 'manager_request' | 'error' | 'handoff';
   clientPhone: string; // digits, e.g. 996555123456
   clientName?: string;
+  /** WhatsApp chatId (may be an "@lid" id) — used for the resume button. */
+  clientChatId?: string;
   summary: string; // what the client wants / the problem
   lastMessage?: string;
   tourLink?: string;
@@ -124,25 +126,34 @@ const REASON_LABEL: Record<LeadAlert['reason'], string> = {
  * open the WhatsApp chat with the client, and (optionally) the tour link.
  */
 export async function notifyAdmin(alert: LeadAlert): Promise<void> {
+  const chatId = alert.clientChatId;
+  // Phone is "unknown" when it's just the "@lid" privacy id copied verbatim
+  // (WhatsApp hid the real number) — don't show it as a callable +number.
+  const phoneKnown =
+    Boolean(alert.clientPhone) && chatId?.split('@')[0]?.replace(/\D/g, '') !== alert.clientPhone;
+
   const lines = [
     `<b>${REASON_LABEL[alert.reason]}</b>`,
     '',
-    `<b>Клиент:</b> ${escapeHtml(alert.clientName || 'без имени')} (+${alert.clientPhone})`,
+    `<b>Клиент:</b> ${escapeHtml(alert.clientName || 'без имени')}${
+      phoneKnown ? ` (+${alert.clientPhone})` : ' (номер скрыт WhatsApp)'
+    }`,
     `<b>Суть:</b> ${escapeHtml(alert.summary)}`,
   ];
   if (alert.lastMessage) lines.push(`<b>Последнее сообщение:</b> ${escapeHtml(alert.lastMessage)}`);
   if (alert.tourLink) lines.push(`<b>Тур:</b> ${escapeHtml(alert.tourLink)}`);
 
-  const buttons: InlineButton[][] = [
-    [{ text: '💬 Написать клиенту в WhatsApp', url: waMeLink(alert.clientPhone) }],
-  ];
+  const buttons: InlineButton[][] = [];
+  if (phoneKnown) {
+    buttons.push([{ text: '💬 Написать клиенту в WhatsApp', url: waMeLink(alert.clientPhone) }]);
+  }
   if (alert.tourLink) buttons.push([{ text: '🔗 Открыть тур', url: alert.tourLink }]);
   // Let the manager hand the conversation back to the bot with one tap.
   buttons.push([
-    { text: '▶️ Вернуть диалог боту', callback_data: `resume:${alert.clientPhone}@c.us` },
+    { text: '▶️ Вернуть диалог боту', callback_data: `resume:${chatId ?? `${alert.clientPhone}@c.us`}` },
   ]);
 
-  await sendTelegram(lines.join('\n'), { buttons });
+  await sendTelegram(lines.join('\n'), { buttons: buttons.length ? buttons : undefined });
 }
 
 /** Plain error/ops alert (no client context). */

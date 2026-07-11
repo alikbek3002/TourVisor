@@ -94,9 +94,18 @@ class ConversationStore {
       };
       this.map.set(chatId, convo);
       this.markDirty(chatId);
-    } else if (name && !convo.name) {
-      convo.name = name;
-      this.markDirty(chatId);
+    } else {
+      if (name && !convo.name) {
+        convo.name = name;
+        this.markDirty(chatId);
+      }
+      // Upgrade a placeholder phone (the "@lid" id copied from the chatId) once
+      // the real number gets resolved from a later message.
+      const lidDigits = chatId.split('@')[0]?.replace(/\D/g, '') ?? '';
+      if (phone && phone !== lidDigits && convo.phone !== phone) {
+        convo.phone = phone;
+        this.markDirty(chatId);
+      }
     }
     return convo;
   }

@@ -246,6 +246,53 @@ export async function fetchQrImage(): Promise<Uint8Array | null> {
 
 // --- webhook parsing --------------------------------------------------------
 
+/** Matches a real phone-bearing WhatsApp JID (not the privacy "@lid" id). */
+const REAL_JID_RE = /@(?:c\.us|s\.whatsapp\.net)$/i;
+
+/** Extract the digits of a JID ("123:4@s.whatsapp.net" -> "123"). */
+function jidToDigits(jid?: unknown): string {
+  if (typeof jid !== 'string') return '';
+  return jid.split('@')[0]?.split(':')[0]?.replace(/\D/g, '') ?? '';
+}
+
+function firstString(...vals: unknown[]): string | undefined {
+  for (const v of vals) if (typeof v === 'string' && v.trim()) return v.trim();
+  return undefined;
+}
+
+/**
+ * Walk a WAHA payload (bounded depth) collecting real-phone JIDs and display
+ * names. NOWEB delivers "@lid" chats whose `from` is a privacy id, not a phone;
+ * the real number and pushName live in engine-specific nested fields (e.g.
+ * key.remoteJidAlt / senderPn / pushName), so we scan for them rather than
+ * hard-coding one shape.
+ */
+function scanPayload(obj: unknown, depth: number, acc: { jids: string[]; names: string[] }): void {
+  if (obj == null || depth > 5 || typeof obj !== 'object') return;
+  if (Array.isArray(obj)) {
+    for (const v of obj) scanPayload(v, depth + 1, acc);
+    return;
+  }
+  for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
+    if (typeof val === 'string') {
+      if (REAL_JID_RE.test(val)) acc.jids.push(val);
+      else if (/(?:push|notify|verified).*name/i.test(key) && val.trim()) acc.names.push(val.trim());
+    } else if (typeof val === 'object') {
+      scanPayload(val, depth + 1, acc);
+    }
+  }
+}
+
+/** Resolve the client's real phone (digits) and display name from a payload. */
+function resolveSender(p: WahaMessagePayload, meJid?: unknown): { phone: string; name?: string } {
+  const acc: { jids: string[]; names: string[] } = { jids: [], names: [] };
+  scanPayload(p, 0, acc);
+  const myDigits = jidToDigits(meJid);
+  const phone = acc.jids.map(jidToDigits).find((d) => d.length >= 8 && d !== myDigits) ?? '';
+  const name = firstString(p.notifyName, p._data?.notifyName, p._data?.pushName, acc.names[0]);
+  return { phone, name };
+}
+
 /**
  * Normalize a WAHA webhook envelope into an InboundMessage, or null if it's not
  * a text message we should handle (wrong event, group, echo, empty body).
@@ -260,19 +307,28 @@ export function parseInbound(envelope: WahaWebhookEnvelope): InboundMessage | nu
   const isGroup = isGroupChat(chatId);
   const fromMe = Boolean(p.fromMe);
   const text = (p.body ?? '').trim();
-  const name = p.notifyName || p._data?.notifyName;
 
   if (fromMe) return null; // ignore our own echoes
   if (isGroup) return null; // 1:1 sales bot — ignore groups
   if (!text) return null; // ignore media-only / empty
 
-  return {
-    chatId,
-    phone: chatIdToPhone(chatId),
-    text,
-    name,
-    isGroup,
-    fromMe,
-    session: envelope.session,
-  };
+  // For "@lid" privacy chats the chatId isn't a phone number — dig the real one
+  // (and the display name) out of the payload so the manager card is usable.
+  const { phone: realPhone, name } = resolveSender(p, envelope.me?.id);
+  const phone = realPhone || chatIdToPhone(chatId);
+
+  if (chatId.endsWith('@lid')) {
+    if (realPhone) {
+      logger.info({ chatId, phone, name }, 'resolved @lid sender');
+    } else {
+      // Couldn't find a phone-bearing JID — log the raw payload so we can map
+      // whatever engine-specific field carries it.
+      logger.info(
+        { chatId, name, payload: JSON.stringify(p).slice(0, 2000) },
+        'unresolved @lid sender — raw payload',
+      );
+    }
+  }
+
+  return { chatId, phone, text, name, isGroup, fromMe, session: envelope.session };
 }

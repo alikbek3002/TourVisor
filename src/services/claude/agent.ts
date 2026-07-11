@@ -98,6 +98,7 @@ async function executeTool(
               ? 'manager_request'
               : (args.reason as 'buying_intent' | 'complaint' | 'manager_request'),
           clientPhone: convo.phone,
+          clientChatId: convo.chatId,
           clientName: convo.name || convo.lead.name,
           summary: args.summary + (args.urgency === 'high' ? ' [СРОЧНО]' : ''),
           lastMessage: lastUserText(convo),
