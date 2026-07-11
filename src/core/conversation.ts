@@ -38,7 +38,7 @@ export interface Conversation {
 }
 
 const MAX_HISTORY = 40; // keep last N turns to bound token usage
-const TTL_MS = 1000 * 60 * 60 * 24; // drop conversations idle > 24h
+const TTL_MS = 1000 * 60 * 60 * 24 * 7; // keep conversation context up to a week
 
 class ConversationStore {
   private map = new Map<string, Conversation>();

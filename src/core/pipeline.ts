@@ -147,3 +147,31 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
 function isAllowed(msg: InboundMessage): boolean {
   return matchesAllowlist(msg.phone, msg.chatId, config.allowlist);
 }
+
+/** How long the bot stays silent after a manager replies manually (24h). */
+const MANAGER_TAKEOVER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A human manager replied to the client manually from the bot's WhatsApp.
+ * Pause the bot for that chat for 24h (context is kept; the bot auto-resumes
+ * afterwards). Notifies admins once, on the first takeover.
+ */
+export function handleManagerManualReply(chatId: string): void {
+  const digits = chatId.split('@')[0]?.replace(/\D/g, '') ?? '';
+  const convo = conversations.get(chatId) ?? conversations.getByPhone(digits);
+  if (!convo) return; // no active bot conversation to pause
+
+  const wasHuman = convo.mode === 'human';
+  conversations.handToHuman(convo, MANAGER_TAKEOVER_MS); // (re)start the 24h window
+  logger.info({ chatId: convo.chatId, wasHuman }, 'manager replied manually — bot paused 24h');
+
+  if (!wasHuman) {
+    void notifyAdmin({
+      reason: 'handoff',
+      clientPhone: convo.phone,
+      clientChatId: convo.chatId,
+      clientName: convo.name,
+      summary: 'Менеджер подключился к диалогу вручную — бот замолчал на 24 часа. Вернуть раньше — кнопкой ниже или /resume.',
+    }).catch(() => {});
+  }
+}

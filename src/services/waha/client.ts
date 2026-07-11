@@ -32,14 +32,70 @@ export function isGroupChat(chatId: string): boolean {
   return chatId.endsWith('@g.us');
 }
 
+// --- outgoing-message tracking ----------------------------------------------
+// The bot and a human manager both send as "fromMe". To auto-pause the bot when
+// a manager replies manually (from the phone / WhatsApp Web), we remember what
+// WE sent — message ids AND text — and treat any fromMe message we don't
+// recognize as a manual manager reply. The text check is a safety net so a
+// mismatched id format can never make the bot mistake its own send for a manual
+// one and pause itself.
+const SENT_TTL_MS = 5 * 60_000;
+const sentIds = new Map<string, number>();
+const sentTexts = new Map<string, number>();
+
+function normText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ').slice(0, 300);
+}
+
+function sweepSent(now: number): void {
+  const cutoff = now - SENT_TTL_MS;
+  for (const [k, t] of sentIds) if (t < cutoff) sentIds.delete(k);
+  for (const [k, t] of sentTexts) if (t < cutoff) sentTexts.delete(k);
+}
+
+/** Collect every plausible message-id string from a WAHA object. */
+function idsOf(o: unknown): string[] {
+  const r = o as Record<string, unknown> | null;
+  if (!r || typeof r !== 'object') return [];
+  const data = r._data as Record<string, unknown> | undefined;
+  const dataId = data?.id as Record<string, unknown> | string | undefined;
+  const candidates: unknown[] = [
+    r.id,
+    (r.id as Record<string, unknown> | undefined)?._serialized,
+    r.messageId,
+    typeof dataId === 'string' ? dataId : dataId?._serialized,
+  ];
+  return candidates.filter((c): c is string => typeof c === 'string' && c.length > 0);
+}
+
+function rememberSent(resp: unknown, text: string): void {
+  const now = Date.now();
+  for (const id of idsOf(resp)) sentIds.set(id, now);
+  if (text.trim()) sentTexts.set(normText(text), now);
+  if (sentIds.size + sentTexts.size > 1000) sweepSent(now);
+}
+
+/** True if this fromMe payload is (very likely) a message the bot itself sent. */
+export function looksLikeBotSend(p: WahaMessagePayload): boolean {
+  const cutoff = Date.now() - SENT_TTL_MS;
+  for (const id of idsOf(p)) {
+    const t = sentIds.get(id);
+    if (t != null && t >= cutoff) return true;
+  }
+  const body = typeof p.body === 'string' ? normText(p.body) : '';
+  const tt = body ? sentTexts.get(body) : undefined;
+  return tt != null && tt >= cutoff;
+}
+
 // --- messaging --------------------------------------------------------------
 
 export async function sendText(chatId: string, text: string): Promise<void> {
-  await postJson(
+  const resp = await postJson(
     url('/api/sendText'),
     { session: config.WAHA_SESSION, chatId, text },
     { headers: headers(), retries: 2 },
   );
+  rememberSent(resp, text);
 }
 
 export async function startTyping(chatId: string): Promise<void> {
@@ -197,7 +253,9 @@ export async function ensureSession(webhookUrl: string): Promise<WahaSessionInfo
       webhooks: [
         {
           url: webhookUrl,
-          events: ['message'],
+          // 'message' = incoming; 'message.any' also fires for outgoing, so we
+          // can catch a manager replying manually and auto-pause the bot.
+          events: ['message', 'message.any'],
         },
       ],
     },
@@ -331,4 +389,26 @@ export function parseInbound(envelope: WahaWebhookEnvelope): InboundMessage | nu
   }
 
   return { chatId, phone, text, name, isGroup, fromMe, session: envelope.session };
+}
+
+export interface ManagerReply {
+  /** The client's chatId the manager replied to. */
+  chatId: string;
+  /** Digits of that chatId (best-effort; may be an @lid id). */
+  phone: string;
+}
+
+/**
+ * Detect a manual reply a human manager sent from the bot's own WhatsApp
+ * (phone / WhatsApp Web), so we can auto-pause the bot for that chat. Returns
+ * null for the bot's own API sends, non-fromMe messages, and groups.
+ */
+export function parseManagerReply(envelope: WahaWebhookEnvelope): ManagerReply | null {
+  if (envelope.event !== 'message' && envelope.event !== 'message.any') return null;
+  const p = envelope.payload as WahaMessagePayload;
+  if (!p || p.fromMe !== true) return null;
+  const to = typeof p.to === 'string' ? p.to : '';
+  if (!to || isGroupChat(to)) return null;
+  if (looksLikeBotSend(p)) return null; // our own send, not a human manager
+  return { chatId: to, phone: to.split('@')[0]?.replace(/\D/g, '') ?? '' };
 }

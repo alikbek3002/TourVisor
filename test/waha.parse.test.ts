@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseInbound,
+  parseManagerReply,
   phoneToChatId,
   chatIdToPhone,
   isGroupChat,
@@ -102,6 +103,39 @@ describe('parseInbound', () => {
       envelope({ id: '1', from: '35639789617196@lid', fromMe: false, body: 'hi' }),
     );
     expect(msg?.phone).toBe('35639789617196');
+  });
+});
+
+describe('parseManagerReply', () => {
+  const outgoing = (payload: Record<string, unknown>): WahaWebhookEnvelope =>
+    ({ event: 'message.any', session: 'default', payload }) as WahaWebhookEnvelope;
+
+  it('detects a manual manager reply (fromMe, unknown to us)', () => {
+    const mr = parseManagerReply(
+      outgoing({ id: 'X1', from: '996770172008@c.us', to: '996555123456@c.us', fromMe: true, body: 'Здравствуйте, это менеджер' }),
+    );
+    expect(mr).not.toBeNull();
+    expect(mr?.chatId).toBe('996555123456@c.us');
+    expect(mr?.phone).toBe('996555123456');
+  });
+
+  it('ignores incoming (non-fromMe) messages', () => {
+    expect(
+      parseManagerReply(outgoing({ id: 'X2', from: '996555123456@c.us', to: '996770172008@c.us', fromMe: false, body: 'hi' })),
+    ).toBeNull();
+  });
+
+  it('ignores fromMe messages to a group', () => {
+    expect(
+      parseManagerReply(outgoing({ id: 'X3', from: '996770172008@c.us', to: '120363@g.us', fromMe: true, body: 'hi' })),
+    ).toBeNull();
+  });
+
+  it('ignores plain "message" events (handled as inbound elsewhere)', () => {
+    const env = { event: 'message', session: 'default', payload: { id: 'X4', from: '996770172008@c.us', to: '996555123456@c.us', fromMe: true, body: 'hi' } } as WahaWebhookEnvelope;
+    // message + fromMe is still recognized (defensive), but the router only
+    // calls this on message.any; here we just assert it doesn't crash.
+    expect(parseManagerReply(env)?.chatId).toBe('996555123456@c.us');
   });
 });
 

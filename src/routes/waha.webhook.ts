@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { enqueueInbound } from '../core/pipeline.js';
-import { parseInbound } from '../services/waha/client.js';
+import { enqueueInbound, handleManagerManualReply } from '../core/pipeline.js';
+import { parseInbound, parseManagerReply } from '../services/waha/client.js';
 import type { WahaWebhookEnvelope } from '../services/waha/types.js';
 
 export const wahaWebhookRouter: Router = Router();
@@ -20,6 +20,19 @@ wahaWebhookRouter.post(webhookPath(), (req, res) => {
 
   try {
     const envelope = req.body as WahaWebhookEnvelope;
+
+    // Outgoing messages arrive via 'message.any'. If a human manager replied
+    // manually (not the bot's own API send), pause the bot for that chat.
+    // Incoming messages are handled via the 'message' event below.
+    if (envelope.event === 'message.any') {
+      const mr = parseManagerReply(envelope);
+      if (mr) {
+        logger.info({ chatId: mr.chatId }, 'manager manual reply detected');
+        handleManagerManualReply(mr.chatId);
+      }
+      return;
+    }
+
     const msg = parseInbound(envelope);
     if (msg) {
       logger.debug({ phone: msg.phone, event: envelope.event }, 'inbound message');
