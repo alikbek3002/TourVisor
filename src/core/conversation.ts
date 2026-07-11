@@ -1,0 +1,146 @@
+import type Anthropic from '@anthropic-ai/sdk';
+import { logger } from '../logger.js';
+
+/**
+ * In-memory per-user conversation store.
+ *
+ * Keyed by WhatsApp chatId. Holds the Claude message history plus lead/handoff
+ * state. This is intentionally simple (a Map) — good enough for a single Railway
+ * instance. Swap for Redis/Postgres if you scale horizontally (see README).
+ */
+
+export type ConversationMode = 'bot' | 'human';
+
+export interface Lead {
+  name?: string;
+  departureCity?: string;
+  country?: string;
+  dateFrom?: string;
+  nights?: number;
+  adults?: number;
+  children?: number;
+  budget?: string;
+  notes?: string;
+}
+
+export interface Conversation {
+  chatId: string; // e.g. 996555123456@c.us
+  phone: string; // digits only, e.g. 996555123456
+  name?: string;
+  mode: ConversationMode;
+  /** When mode === 'human', the bot stays silent until this time (ms epoch) or forever if null. */
+  mutedUntil: number | null;
+  messages: Anthropic.MessageParam[];
+  lead: Lead;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const MAX_HISTORY = 40; // keep last N turns to bound token usage
+const TTL_MS = 1000 * 60 * 60 * 24; // drop conversations idle > 24h
+
+class ConversationStore {
+  private map = new Map<string, Conversation>();
+
+  get(chatId: string): Conversation | undefined {
+    return this.map.get(chatId);
+  }
+
+  getOrCreate(chatId: string, phone: string, name?: string): Conversation {
+    let convo = this.map.get(chatId);
+    if (!convo) {
+      convo = {
+        chatId,
+        phone,
+        name,
+        mode: 'bot',
+        mutedUntil: null,
+        messages: [],
+        lead: {},
+        createdAt: nowMs(),
+        updatedAt: nowMs(),
+      };
+      this.map.set(chatId, convo);
+    } else if (name && !convo.name) {
+      convo.name = name;
+    }
+    return convo;
+  }
+
+  appendUser(convo: Conversation, text: string): void {
+    convo.messages.push({ role: 'user', content: text });
+    this.touch(convo);
+  }
+
+  append(convo: Conversation, message: Anthropic.MessageParam): void {
+    convo.messages.push(message);
+    this.touch(convo);
+  }
+
+  /** Hand the conversation to a human; optionally mute the bot for `muteMs`. */
+  handToHuman(convo: Conversation, muteMs: number | null = null): void {
+    convo.mode = 'human';
+    convo.mutedUntil = muteMs == null ? null : nowMs() + muteMs;
+    this.touch(convo);
+  }
+
+  returnToBot(convo: Conversation): void {
+    convo.mode = 'bot';
+    convo.mutedUntil = null;
+    this.touch(convo);
+  }
+
+  /** Whether the bot should currently respond automatically. */
+  isBotActive(convo: Conversation): boolean {
+    if (convo.mode === 'bot') return true;
+    if (convo.mutedUntil != null && nowMs() > convo.mutedUntil) {
+      // mute window expired → resume bot
+      this.returnToBot(convo);
+      return true;
+    }
+    return false;
+  }
+
+  updateLead(convo: Conversation, patch: Partial<Lead>): void {
+    convo.lead = { ...convo.lead, ...patch };
+    this.touch(convo);
+  }
+
+  private touch(convo: Conversation): void {
+    convo.updatedAt = nowMs();
+    // Trim history but always keep it starting on a user turn so the API accepts it.
+    if (convo.messages.length > MAX_HISTORY) {
+      const overflow = convo.messages.length - MAX_HISTORY;
+      convo.messages.splice(0, overflow);
+      while (convo.messages.length && convo.messages[0]?.role !== 'user') {
+        convo.messages.shift();
+      }
+    }
+  }
+
+  /** Periodic cleanup of stale conversations. */
+  sweep(): void {
+    const cutoff = nowMs() - TTL_MS;
+    let removed = 0;
+    for (const [id, convo] of this.map) {
+      if (convo.updatedAt < cutoff) {
+        this.map.delete(id);
+        removed++;
+      }
+    }
+    if (removed) logger.debug({ removed }, 'conversation sweep');
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+}
+
+function nowMs(): number {
+  return Date.now();
+}
+
+export const conversations = new ConversationStore();
+
+// Sweep hourly.
+setInterval(() => conversations.sweep(), 1000 * 60 * 60).unref();

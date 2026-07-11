@@ -1,0 +1,69 @@
+# Local development stack: WAHA (WhatsApp gateway) + the bot backend.
+#
+#   1. cp .env.example .env  and fill in ANTHROPIC_API_KEY, TOURVISOR_*, TELEGRAM_*
+#   2. docker compose up --build
+#   3. Open http://localhost:3000/dashboard  → start the "default" session → scan QR
+#   4. Message the connected WhatsApp number.
+#
+# WAHA delivers inbound messages to the bot over the compose network at
+# http://bot:3000/webhooks/waha (configured via WHATSAPP_HOOK_URL below), so the
+# bot does NOT auto-register (WAHA_AUTOREGISTER stays false).
+
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      # NOWEB engine = no Chromium, far lighter than the default WEBJS.
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+      # API auth — must match WAHA_API_KEY in the bot's env.
+      WAHA_API_KEY: ${WAHA_API_KEY:-devkey}
+      # Persist auth so you don't re-scan the QR on every restart.
+      WAHA_LOCAL_STORE_BASE_DIR: /data/.sessions
+      WHATSAPP_FILES_FOLDER: /data/.media
+      # Auto-start the default session on boot.
+      WHATSAPP_START_SESSION: default
+      WHATSAPP_RESTART_ALL_SESSIONS: 'True'
+      # Deliver inbound messages to the bot (compose-internal DNS name "bot").
+      WHATSAPP_HOOK_URL: http://bot:3000/webhooks/waha${WAHA_WEBHOOK_SECRET:+/}${WAHA_WEBHOOK_SECRET:-}
+      WHATSAPP_HOOK_EVENTS: message
+      # Dashboard UI (separate from API key).
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-waha}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-waha}
+    volumes:
+      - waha-sessions:/data
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - waha
+    ports:
+      - '8080:3000'
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-5}
+      TOURVISOR_AUTH_LOGIN: ${TOURVISOR_AUTH_LOGIN}
+      TOURVISOR_AUTH_PASS: ${TOURVISOR_AUTH_PASS}
+      TOURVISOR_DEFAULT_DEPARTURE: ${TOURVISOR_DEFAULT_DEPARTURE}
+      TOURVISOR_CURRENCY: ${TOURVISOR_CURRENCY:-0}
+      # Reach WAHA over the compose network.
+      WAHA_BASE_URL: http://waha:3000
+      WAHA_API_KEY: ${WAHA_API_KEY:-devkey}
+      WAHA_SESSION: default
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET:-}
+      WAHA_AUTOREGISTER: 'false'
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID}
+      COMPANY_NAME: ${COMPANY_NAME:-Aisuluu Travel}
+      MANAGER_NAME: ${MANAGER_NAME:-менеджер}
+      MANAGER_WHATSAPP: ${MANAGER_WHATSAPP}
+      ALLOWLIST: ${ALLOWLIST:-}
+
+volumes:
+  waha-sessions:
