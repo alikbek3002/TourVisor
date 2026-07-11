@@ -12,6 +12,8 @@ export interface TourOption {
   price: number;
   currency?: string;
   operator?: string;
+  /** Tourvisor tour id (used to build a per-tour cart deep link). */
+  tourId?: string;
   /** Public link a client can open. */
   link?: string;
 }

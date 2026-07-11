@@ -4,6 +4,7 @@ import type { Conversation } from '../../core/conversation.js';
 import type { TourOption, TourSearchOutcome } from '../../core/types.js';
 import type { SearchToursInput } from '../claude/tools.js';
 import { num, toArray, tvGet } from './client.js';
+import { createCartId } from './cart.js';
 import { resolveCountry, resolveDeparture } from './references.js';
 import type { TvHotel, TvResultResponse, TvSearchResponse, TvTour } from './types.js';
 
@@ -56,7 +57,7 @@ export async function searchTours(
     nodescription: 1,
   });
 
-  const options = mapResults(result);
+  const options = mapResults(result).slice(0, RESULT_LIMIT);
   if (options.length === 0) {
     return {
       status: 'empty',
@@ -64,7 +65,21 @@ export async function searchTours(
       message: finished ? undefined : 'поиск не успел завершиться — можно повторить',
     };
   }
-  return { status: 'ok', options: options.slice(0, RESULT_LIMIT) };
+  await enrichCartLinks(options);
+  return { status: 'ok', options };
+}
+
+/** Replace each option's link with a per-tour Tourvisor module cart link (#tvcartid). */
+async function enrichCartLinks(options: TourOption[]): Promise<void> {
+  const tpl = config.TOUR_LINK_TEMPLATE;
+  if (!config.TOURVISOR_MODULE_ID || !tpl || !tpl.includes('{cartid}')) return;
+  await Promise.all(
+    options.map(async (o) => {
+      if (!o.tourId) return;
+      const cartId = await createCartId(o.tourId);
+      if (cartId) o.link = tpl.replace('{cartid}', cartId);
+    }),
+  );
 }
 
 export function buildSearchParams(
@@ -143,6 +158,7 @@ export function mapResults(res: TvResultResponse): TourOption[] {
       price,
       currency: normalizeCurrency(best.currency),
       operator: best.operatorname,
+      tourId: best.tourid,
       link: buildTourLink(hotel, best),
     });
   }
@@ -164,7 +180,13 @@ function cheapestTour(hotel: TvHotel): TvTour | undefined {
 export function buildTourLink(hotel: TvHotel, tour: TvTour): string | undefined {
   const tpl = config.TOUR_LINK_TEMPLATE;
   if (tpl) {
-    return tpl.replaceAll('{tourid}', tour.tourid ?? '').replaceAll('{hotelcode}', hotel.hotelcode ?? '');
+    let link = tpl
+      .replaceAll('{tourid}', tour.tourid ?? '')
+      .replaceAll('{hotelcode}', hotel.hotelcode ?? '');
+    // {cartid} is filled in asynchronously later; until then drop the fragment
+    // so the fallback is a clean base URL rather than a broken "#tvcartid={cartid}".
+    if (link.includes('{cartid}')) link = link.replace(/#.*$/, '');
+    return link;
   }
   return hotel.fulldesclink || hotel.reviewlink || undefined;
 }
