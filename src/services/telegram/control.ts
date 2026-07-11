@@ -4,7 +4,9 @@ import { logger } from '../../logger.js';
 import { conversations } from '../../core/conversation.js';
 import { postJson } from '../../util/http.js';
 import { apiUrl, sendTelegram, sendTelegramPhoto } from './notifier.js';
-import { fetchQrImage, getSession, phoneToChatId } from '../waha/client.js';
+import { fetchQrImage, getSession, phoneToChatId, restartSession } from '../waha/client.js';
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Telegram control plane — lets the manager drive the bot from the admin chat:
@@ -203,11 +205,33 @@ async function handlePause(to: string, arg?: string, minutesArg?: string): Promi
 }
 
 async function handleQr(to: string): Promise<void> {
+  // Make sure the session is scannable; restart it if it's stopped/failed.
+  const status = (await getSession())?.status;
+  if (status !== 'SCAN_QR_CODE' && status !== 'WORKING') {
+    await sendTelegram('Перезапускаю WhatsApp-сессию, подождите ~10 сек…', { chatId: to });
+    try {
+      await restartSession();
+    } catch {
+      /* ignore — we still try to fetch a QR below */
+    }
+    for (let i = 0; i < 8; i++) {
+      await sleep(2000);
+      if ((await getSession())?.status === 'SCAN_QR_CODE') break;
+    }
+  }
+  if ((await getSession())?.status === 'WORKING') {
+    await sendTelegram('✅ WhatsApp уже подключён — бот готов.', { chatId: to });
+    return;
+  }
   const qr = await fetchQrImage();
   if (qr) {
-    await sendTelegramPhoto(qr, '📲 Отсканируйте QR в WhatsApp → Связанные устройства.', to);
+    await sendTelegramPhoto(
+      qr,
+      '📲 Сканируйте: WhatsApp → Связанные устройства → Привязка устройства. Код живёт ~20 сек — не успели, отправьте /qr снова.',
+      to,
+    );
   } else {
-    await sendTelegram('QR недоступен — возможно, сессия уже подключена. Проверьте /status.', {
+    await sendTelegram('QR пока недоступен, отправьте /qr ещё раз через несколько секунд.', {
       chatId: to,
     });
   }

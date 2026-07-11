@@ -92,6 +92,15 @@ export async function getSession(): Promise<WahaSessionInfo | null> {
   }
 }
 
+/** Restart the WAHA session (recovers from STOPPED/FAILED before showing a QR). */
+export async function restartSession(): Promise<void> {
+  await postJson(
+    url(`/api/sessions/${config.WAHA_SESSION}/restart`),
+    {},
+    { headers: headers(), retries: 1, timeoutMs: 20_000 },
+  );
+}
+
 /**
  * Ensure the session exists, is started, and is configured to POST webhooks to
  * our public URL. Uses the modern WAHA sessions API (create-or-update).
