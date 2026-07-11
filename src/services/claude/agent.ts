@@ -146,7 +146,7 @@ function formatOutcomeForModel(outcome: TourSearchOutcome): string {
   }
   const lines = outcome.options.slice(0, 5).map((o, i) => {
     const parts = [
-      `${i + 1}. ${o.hotelName}${o.stars ? ` (${o.stars} зв.)` : ''}`,
+      `${i + 1}. ${o.hotelName}${o.stars ? ` ${o.stars}★` : ''}`,
       o.region && `${o.region}${o.country ? `, ${o.country}` : ''}`,
       o.meal,
       o.nights && `${o.nights} ноч.`,
@@ -158,7 +158,7 @@ function formatOutcomeForModel(outcome: TourSearchOutcome): string {
     return parts.join(' — ');
   });
   const footer = outcome.searchLink ? `\nВсе варианты: ${outcome.searchLink}` : '';
-  return `Найдены варианты. Перескажи 2–4 лучших человеческим языком (отель, класс, питание, даты, цена за весь тур). Для КАЖДОГО показанного варианта ОБЯЗАТЕЛЬНО добавь его «ссылку» целиком, отдельной строкой — без неё вариант не показывай. Не используй звёздочки/markdown для выделения:\n${lines.join('\n')}${footer}`;
+  return `Найдены варианты. Перескажи 2–4 лучших человеческим языком (отель, класс, питание, даты, цена за весь тур). Для КАЖДОГО показанного варианта ОБЯЗАТЕЛЬНО добавь его «ссылку» целиком, отдельной строкой — без неё вариант не показывай. Не используй markdown-выделение (* и **); символ звезды ★ для класса отеля — можно:\n${lines.join('\n')}${footer}`;
 }
 
 function extractText(content: Anthropic.ContentBlock[]): string {
