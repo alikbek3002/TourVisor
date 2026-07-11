@@ -63,6 +63,16 @@ class ConversationStore {
     return this.map.get(chatId);
   }
 
+  /** Find a conversation by phone digits (handles @c.us vs @lid chatId suffixes). */
+  getByPhone(phone: string): Conversation | undefined {
+    const digits = phone.replace(/\D/g, '');
+    if (!digits) return undefined;
+    for (const c of this.map.values()) {
+      if (c.phone === digits) return c;
+    }
+    return undefined;
+  }
+
   getOrCreate(chatId: string, phone: string, name?: string): Conversation {
     let convo = this.map.get(chatId);
     if (!convo) {

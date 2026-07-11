@@ -183,14 +183,14 @@ async function handleResume(to: string, arg?: string): Promise<void> {
     return;
   }
   const clientChatId = resolveChatId(arg);
-  const convo = conversations.get(clientChatId);
+  const convo = conversations.get(clientChatId) ?? conversations.getByPhone(arg);
   if (!convo) {
     await sendTelegram(`Диалог не найден: ${clientChatId}`, { chatId: to });
     return;
   }
   conversations.returnToBot(convo);
   await sendTelegram(`✅ Бот снова отвечает клиенту +${convo.phone}.`, { chatId: to });
-  logger.info({ chatId: clientChatId }, 'bot resumed via telegram');
+  logger.info({ chatId: convo.chatId }, 'bot resumed via telegram');
 }
 
 async function handlePause(to: string, arg?: string, minutesArg?: string): Promise<void> {
@@ -199,7 +199,7 @@ async function handlePause(to: string, arg?: string, minutesArg?: string): Promi
     return;
   }
   const clientChatId = resolveChatId(arg);
-  const convo = conversations.get(clientChatId);
+  const convo = conversations.get(clientChatId) ?? conversations.getByPhone(arg);
   if (!convo) {
     await sendTelegram(`Диалог не найден: ${clientChatId}`, { chatId: to });
     return;
