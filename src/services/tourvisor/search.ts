@@ -143,7 +143,7 @@ export function mapResults(res: TvResultResponse): TourOption[] {
       price,
       currency: normalizeCurrency(best.currency),
       operator: best.operatorname,
-      link: hotel.fulldesclink || hotel.reviewlink,
+      link: buildTourLink(hotel, best),
     });
   }
   options.sort((a, b) => a.price - b.price);
@@ -158,6 +158,15 @@ function cheapestTour(hotel: TvHotel): TvTour | undefined {
     const mp = num(min.price) ?? Infinity;
     return p < mp ? t : min;
   });
+}
+
+/** Build the client-facing tour link from TOUR_LINK_TEMPLATE, else Tourvisor's own. */
+export function buildTourLink(hotel: TvHotel, tour: TvTour): string | undefined {
+  const tpl = config.TOUR_LINK_TEMPLATE;
+  if (tpl) {
+    return tpl.replaceAll('{tourid}', tour.tourid ?? '').replaceAll('{hotelcode}', hotel.hotelcode ?? '');
+  }
+  return hotel.fulldesclink || hotel.reviewlink || undefined;
 }
 
 export function normalizeCurrency(cur?: string): string | undefined {

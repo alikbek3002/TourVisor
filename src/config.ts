@@ -37,6 +37,12 @@ const EnvSchema = z.object({
   TOURVISOR_DEFAULT_DEPARTURE: z.string().optional(),
   /** Search currency: 0=RUB, 1=USD/EUR, 2=BYN, 3=KZT. */
   TOURVISOR_CURRENCY: z.enum(['0', '1', '2', '3']).default('0'),
+  /**
+   * Link template for tour results, e.g. https://lalatravel.kg/podbor-tura or
+   * https://lalatravel.kg/podbor-tura#tvcartid={tourid}. Placeholders:
+   * {tourid}, {hotelcode}. When unset, falls back to Tourvisor's own link.
+   */
+  TOUR_LINK_TEMPLATE: z.string().optional(),
 
   // --- WAHA (WhatsApp HTTP API) ---
   WAHA_BASE_URL: z.string().url().default('http://localhost:3000'),
