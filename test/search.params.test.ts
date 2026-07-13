@@ -50,6 +50,22 @@ describe('buildSearchParams', () => {
     expect(p.priceto).toBe(6000);
   });
 
+  it('forces a 4★ class floor for premium requests when stars not given', () => {
+    const p = buildSearchParams({ country: 'Турция', sort: 'premium' }, '1', '4');
+    expect(p.stars).toBe(4);
+    expect(p.starsbetter).toBe(1);
+  });
+
+  it('keeps an explicit star level over the premium default', () => {
+    const p = buildSearchParams({ country: 'Турция', sort: 'premium', starsFrom: 5 }, '1', '4');
+    expect(p.stars).toBe(5);
+  });
+
+  it('does not force a class floor for cheapest/default searches', () => {
+    expect(buildSearchParams({ country: 'Турция' }, '1', '4').stars).toBeUndefined();
+    expect(buildSearchParams({ country: 'Турция', sort: 'cheapest' }, '1', '4').stars).toBeUndefined();
+  });
+
   it('applies the meal filter when specified', () => {
     const p = buildSearchParams({ country: 'Турция', meal: 'всё включено' }, '1', '4');
     expect(p.meal).toBe(5);

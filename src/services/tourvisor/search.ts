@@ -128,8 +128,13 @@ export function buildSearchParams(
     params[`childage${i + 1}`] = age != null && age >= 0 && age <= 17 ? age : 7;
   }
 
-  if (input.starsFrom) {
-    params.stars = input.starsFrom;
+  // For premium/pricier requests, force a class floor so Tourvisor actually
+  // returns higher-end hotels instead of the cheapest set re-sorted. If the
+  // client/model didn't specify a star level, default to 4★+.
+  const premium = input.sort === 'premium';
+  const starsFrom = input.starsFrom ?? (premium ? 4 : undefined);
+  if (starsFrom) {
+    params.stars = starsFrom;
     params.starsbetter = 1;
   }
   if (input.priceTo) params.priceto = input.priceTo;
