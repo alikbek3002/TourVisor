@@ -57,13 +57,22 @@ export async function searchTours(
     nodescription: 1,
   });
 
-  const ranked = rankOptions(mapResults(result), input.sort);
+  const mapped = mapResults(result);
+  const ranked = rankOptions(applyPriceFloor(mapped, input.priceFrom), input.sort);
   const options = ranked.slice(0, RESULT_LIMIT);
   if (options.length === 0) {
+    // If the client named a price floor and it removed everything, say so
+    // explicitly so the model offers to lower it instead of silently falling
+    // back to the cheap tours the client just rejected.
+    const flooredOut = Boolean(input.priceFrom) && mapped.length > 0;
     return {
       status: 'empty',
       options: [],
-      message: finished ? undefined : 'поиск не успел завершиться — можно повторить',
+      message: flooredOut
+        ? `все найденные туры дешевле порога priceFrom=${input.priceFrom}; дороже этой суммы в этих условиях ничего нет — предложи клиенту снизить порог или сменить даты/направление`
+        : finished
+          ? undefined
+          : 'поиск не успел завершиться — можно повторить',
     };
   }
   await enrichCartLinks(options);
@@ -81,6 +90,17 @@ function rankOptions(options: TourOption[], sort?: 'cheapest' | 'premium'): Tour
   return [...options].sort(
     (a, b) => (b.rating ?? 0) - (a.rating ?? 0) || b.price - a.price,
   );
+}
+
+/**
+ * Enforce a client-named price floor on the results. Tourvisor's `pricefrom`
+ * already filters server-side, but this guarantees the client-facing promise —
+ * when someone asks for "варианты выше 5000" we never show anything cheaper,
+ * even if the provider slips a below-floor tour into the set.
+ */
+export function applyPriceFloor(options: TourOption[], priceFrom?: number): TourOption[] {
+  if (!priceFrom) return options;
+  return options.filter((o) => o.price >= priceFrom);
 }
 
 /** Replace each option's link with a per-tour Tourvisor module cart link (#tvcartid). */

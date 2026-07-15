@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildSearchParams, mealCode } from '../src/services/tourvisor/search.js';
+import { applyPriceFloor, buildSearchParams, mealCode } from '../src/services/tourvisor/search.js';
+import type { TourOption } from '../src/core/types.js';
 
 describe('buildSearchParams', () => {
   it('defaults each child age to 7 when not provided', () => {
@@ -75,6 +76,24 @@ describe('buildSearchParams', () => {
   it('leaves meal unset when not specified or unknown', () => {
     expect(buildSearchParams({ country: 'Турция' }, '1', '4').meal).toBeUndefined();
     expect(buildSearchParams({ country: 'Турция', meal: 'любое' }, '1', '4').meal).toBeUndefined();
+  });
+});
+
+describe('applyPriceFloor', () => {
+  const opt = (price: number): TourOption => ({ hotelName: 'Отель', price });
+
+  it('drops options priced below the client-named floor', () => {
+    const out = applyPriceFloor([opt(3000), opt(5000), opt(7000)], 5000);
+    expect(out.map((o) => o.price)).toEqual([5000, 7000]);
+  });
+
+  it('returns the list untouched when no floor is given', () => {
+    const list = [opt(3000), opt(7000)];
+    expect(applyPriceFloor(list)).toBe(list);
+  });
+
+  it('can remove everything when nothing clears the floor', () => {
+    expect(applyPriceFloor([opt(1000), opt(2000)], 5000)).toEqual([]);
   });
 });
 
