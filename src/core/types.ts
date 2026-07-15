@@ -25,6 +25,11 @@ export interface TourSearchOutcome {
   options: TourOption[];
   /** Human note — e.g. an error reason or "search still running". */
   message?: string;
+  /**
+   * Extra context surfaced to the model even on a successful search — e.g. "the
+   * named hotel wasn't found, showing the country instead".
+   */
+  note?: string;
   /** A link to the full result set on Tourvisor, if available. */
   searchLink?: string;
 }

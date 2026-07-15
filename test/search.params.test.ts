@@ -51,6 +51,16 @@ describe('buildSearchParams', () => {
     expect(p.priceto).toBe(6000);
   });
 
+  it('joins resolved hotel codes into the `hotels` filter', () => {
+    const p = buildSearchParams({ country: 'Турция', hotelName: 'Rixos' }, '1', '4', ['55750', '1451']);
+    expect(p.hotels).toBe('55750,1451');
+  });
+
+  it('omits the hotels filter when no codes are resolved', () => {
+    expect(buildSearchParams({ country: 'Турция' }, '1', '4').hotels).toBeUndefined();
+    expect(buildSearchParams({ country: 'Турция' }, '1', '4', []).hotels).toBeUndefined();
+  });
+
   it('forces a 4★ class floor for premium requests when stars not given', () => {
     const p = buildSearchParams({ country: 'Турция', sort: 'premium' }, '1', '4');
     expect(p.stars).toBe(4);

@@ -25,6 +25,20 @@ export interface TvListCountriesResponse {
   lists?: { countries?: { country?: TvCountry[] | TvCountry } };
 }
 
+/** A hotel as returned by the reference list (list.php?type=hotel&hotcountry=…). */
+export interface TvRefHotel {
+  id: string;
+  name: string;
+  stars?: number | string;
+  rating?: number | string;
+  region?: string; // region id (reference list returns codes, not names)
+  subregion?: string;
+}
+
+export interface TvListHotelsResponse {
+  lists?: { hotels?: { hotel?: TvRefHotel[] | TvRefHotel } };
+}
+
 export interface TvSearchResponse {
   result?: { requestid?: number | string; error?: string };
   error?: string;

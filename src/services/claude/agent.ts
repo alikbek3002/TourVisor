@@ -142,7 +142,8 @@ function formatOutcomeForModel(outcome: TourSearchOutcome): string {
     return `Поиск не удался: ${outcome.message ?? 'ошибка сервиса'}. Предложи клиенту уточнить параметры или повторить.`;
   }
   if (outcome.status === 'empty' || outcome.options.length === 0) {
-    return `Ничего не найдено по этим параметрам${outcome.message ? ` (${outcome.message})` : ''}. Предложи смягчить условия: другие даты, бюджет или направление.`;
+    const note = outcome.note ? `${outcome.note}\n` : '';
+    return `${note}Ничего не найдено по этим параметрам${outcome.message ? ` (${outcome.message})` : ''}. Предложи смягчить условия: другие даты, бюджет или направление.`;
   }
   const lines = outcome.options.slice(0, 5).map((o, i) => {
     const parts = [
@@ -158,7 +159,8 @@ function formatOutcomeForModel(outcome: TourSearchOutcome): string {
     return parts.join(' — ');
   });
   const footer = outcome.searchLink ? `\nВсе варианты: ${outcome.searchLink}` : '';
-  return `Найдены варианты. Перескажи 2–4 лучших человеческим языком (отель, класс, питание, даты, цена за весь тур). Для КАЖДОГО показанного варианта ОБЯЗАТЕЛЬНО добавь его «ссылку» целиком, отдельной строкой — без неё вариант не показывай. Не используй markdown-выделение (* и **); символ звезды ★ для класса отеля — можно:\n${lines.join('\n')}${footer}`;
+  const note = outcome.note ? `${outcome.note}\n` : '';
+  return `${note}Найдены варианты. Перескажи 2–4 лучших человеческим языком (отель, класс, питание, даты, цена за весь тур). Для КАЖДОГО показанного варианта ОБЯЗАТЕЛЬНО добавь его «ссылку» целиком, отдельной строкой — без неё вариант не показывай. Не используй markdown-выделение (* и **); символ звезды ★ для класса отеля — можно:\n${lines.join('\n')}${footer}`;
 }
 
 function extractText(content: Anthropic.ContentBlock[]): string {

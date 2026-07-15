@@ -24,6 +24,11 @@ export const tools: Anthropic.Tool[] = [
           type: 'string',
           description: 'Страна назначения на русском, напр. "Турция", "Египет", "ОАЭ", "Таиланд".',
         },
+        hotelName: {
+          type: 'string',
+          description:
+            'Название конкретного отеля, если клиент его назвал (напр. «Rixos Premium Belek», «Delphin Imperial», «Titanic Deluxe»). Бот сам найдёт код этого отеля в справочнике страны и покажет туры ИМЕННО в него. Обязательно вместе с country (страна, где находится отель). Если название написано с ошибкой или отель не найден — бот сообщит, тогда уточни название у клиента.',
+        },
         departureCity: {
           type: 'string',
           description:
@@ -132,6 +137,7 @@ export const tools: Anthropic.Tool[] = [
 /** Parsed input shapes (Claude guarantees the schema, we trust-but-narrow). */
 export interface SearchToursInput {
   country: string;
+  hotelName?: string;
   departureCity?: string;
   dateFrom?: string;
   dateTo?: string;

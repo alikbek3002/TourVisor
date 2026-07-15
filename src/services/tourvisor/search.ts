@@ -5,7 +5,7 @@ import type { TourOption, TourSearchOutcome } from '../../core/types.js';
 import type { SearchToursInput } from '../claude/tools.js';
 import { num, toArray, tvGet } from './client.js';
 import { createCartId } from './cart.js';
-import { resolveCountry, resolveDeparture } from './references.js';
+import { resolveCountry, resolveDeparture, resolveHotels } from './references.js';
 import type { TvHotel, TvResultResponse, TvSearchResponse, TvTour } from './types.js';
 
 /**
@@ -39,7 +39,26 @@ export async function searchTours(
     return { status: 'empty', options: [], message: `страна "${input.country}" не найдена` };
   }
 
-  const params = buildSearchParams(input, departure, country);
+  // If the client named a specific hotel, resolve it to Tourvisor hotel code(s)
+  // within that country and filter the search to it. If we can't find it, fall
+  // back to a normal country search and tell the model so it can explain.
+  let hotelCodes: string[] | undefined;
+  let note: string | undefined;
+  if (input.hotelName?.trim()) {
+    const matches = await resolveHotels(country, input.hotelName);
+    if (matches.length) {
+      hotelCodes = matches.map((m) => m.id);
+      logger.info(
+        { hotelName: input.hotelName, matched: matches.map((m) => m.name) },
+        'resolved hotel name → codes',
+      );
+    } else {
+      note = `Отель «${input.hotelName}» не найден в справочнике по стране — искал БЕЗ фильтра по отелю. Скажи клиенту, что именно этот отель не нашёл (возможно, опечатка в названии или он не у этого туроператора), уточни название или предложи похожие варианты.`;
+      logger.info({ hotelName: input.hotelName, country }, 'hotel name not resolved');
+    }
+  }
+
+  const params = buildSearchParams(input, departure, country, hotelCodes);
   logger.info({ params }, 'tourvisor search start');
 
   const started = await tvGet<TvSearchResponse>('search.php', params);
@@ -65,18 +84,18 @@ export async function searchTours(
     // explicitly so the model offers to lower it instead of silently falling
     // back to the cheap tours the client just rejected.
     const flooredOut = Boolean(input.priceFrom) && mapped.length > 0;
-    return {
-      status: 'empty',
-      options: [],
-      message: flooredOut
-        ? `все найденные туры дешевле порога priceFrom=${input.priceFrom}; дороже этой суммы в этих условиях ничего нет — предложи клиенту снизить порог или сменить даты/направление`
-        : finished
-          ? undefined
-          : 'поиск не успел завершиться — можно повторить',
-    };
+    let message: string | undefined;
+    if (hotelCodes) {
+      message = `по отелю «${input.hotelName}» на эти даты/условия туров нет — предложи клиенту другие даты, похожие отели того же уровня или убрать часть фильтров`;
+    } else if (flooredOut) {
+      message = `все найденные туры дешевле порога priceFrom=${input.priceFrom}; дороже этой суммы в этих условиях ничего нет — предложи клиенту снизить порог или сменить даты/направление`;
+    } else if (!finished) {
+      message = 'поиск не успел завершиться — можно повторить';
+    }
+    return { status: 'empty', options: [], message, note };
   }
   await enrichCartLinks(options);
-  return { status: 'ok', options };
+  return { status: 'ok', options, note };
 }
 
 /**
@@ -120,6 +139,7 @@ export function buildSearchParams(
   input: SearchToursInput,
   departure: string,
   country: string,
+  hotelCodes?: string[],
 ): Record<string, string | number | undefined> {
   const { datefrom, dateto } = resolveDateRange(input.dateFrom, input.dateTo);
   const nightsfrom = input.nightsFrom ?? 7;
@@ -157,6 +177,9 @@ export function buildSearchParams(
     params.stars = starsFrom;
     params.starsbetter = 1;
   }
+  // Restrict the search to specific hotel(s) when the client named one.
+  if (hotelCodes?.length) params.hotels = hotelCodes.join(',');
+
   if (input.priceTo) params.priceto = input.priceTo;
   if (input.priceFrom) params.pricefrom = input.priceFrom;
 
