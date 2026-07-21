@@ -32,6 +32,19 @@ export function isGroupChat(chatId: string): boolean {
   return chatId.endsWith('@g.us');
 }
 
+/**
+ * Service pseudo-chats that aren't a person: the status/stories feed, channels
+ * (newsletters) and broadcast lists. Answering these wastes Claude turns and
+ * pollutes the conversation store.
+ */
+export function isSystemChat(chatId: string): boolean {
+  return (
+    chatId === 'status@broadcast' ||
+    chatId.endsWith('@broadcast') ||
+    chatId.endsWith('@newsletter')
+  );
+}
+
 // --- outgoing-message tracking ----------------------------------------------
 // The bot and a human manager both send as "fromMe". To auto-pause the bot when
 // a manager replies manually (from the phone / WhatsApp Web), we remember what
@@ -368,6 +381,7 @@ export function parseInbound(envelope: WahaWebhookEnvelope): InboundMessage | nu
 
   if (fromMe) return null; // ignore our own echoes
   if (isGroup) return null; // 1:1 sales bot — ignore groups
+  if (isSystemChat(chatId)) return null; // statuses / channels / broadcast lists
   if (!text) return null; // ignore media-only / empty
 
   // For "@lid" privacy chats the chatId isn't a phone number — dig the real one
@@ -408,7 +422,7 @@ export function parseManagerReply(envelope: WahaWebhookEnvelope): ManagerReply |
   const p = envelope.payload as WahaMessagePayload;
   if (!p || p.fromMe !== true) return null;
   const to = typeof p.to === 'string' ? p.to : '';
-  if (!to || isGroupChat(to)) return null;
+  if (!to || isGroupChat(to) || isSystemChat(to)) return null;
   if (looksLikeBotSend(p)) return null; // our own send, not a human manager
   return { chatId: to, phone: to.split('@')[0]?.replace(/\D/g, '') ?? '' };
 }
