@@ -15,7 +15,9 @@ describe('toGeminiContents', () => {
     ]);
   });
 
-  it('converts a full tool-use round trip (Claude-era history included)', () => {
+  it('renders past tool loops as text — no functionCall parts without signatures', () => {
+    // Gemini 3.x rejects functionCall parts lacking thoughtSignature, and stored
+    // history has none (incl. Claude-era turns) — so old loops become prose.
     const messages: Anthropic.MessageParam[] = [
       { role: 'user', content: 'Тур в Турцию' },
       {
@@ -33,18 +35,11 @@ describe('toGeminiContents', () => {
     ];
     const contents = toGeminiContents(messages);
     expect(contents).toHaveLength(4);
-    expect(contents[1]).toEqual({
-      role: 'model',
-      parts: [
-        { text: 'Сейчас поищу' },
-        { functionCall: { name: 'search_tours', args: { country: 'Турция' } } },
-      ],
-    });
-    // functionResponse resolves the tool NAME from the preceding tool_use id.
-    expect(contents[2]).toEqual({
-      role: 'user',
-      parts: [{ functionResponse: { name: 'search_tours', response: { output: 'Найдено 3 варианта' } } }],
-    });
+    const allParts = contents.flatMap((c) => c.parts ?? []);
+    expect(allParts.every((p) => 'text' in p && !('functionCall' in p) && !('functionResponse' in p))).toBe(true);
+    expect(contents[1]!.parts![1]!.text).toContain('search_tours');
+    expect(contents[1]!.parts![1]!.text).toContain('Турция');
+    expect(contents[2]!.parts![0]!.text).toContain('Найдено 3 варианта');
   });
 
   it('skips empty text blocks and empty turns entirely', () => {

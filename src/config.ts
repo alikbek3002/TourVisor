@@ -27,7 +27,7 @@ const EnvSchema = z.object({
   // --- AI providers ---
   // Gemini is preferred when its key is set; Claude is the fallback provider.
   GEMINI_API_KEY: z.string().min(1).optional(),
-  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+  GEMINI_MODEL: z.string().default('gemini-3.6-flash'),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   CLAUDE_MODEL: z.string().default('claude-sonnet-5'),
   /** Max output tokens per turn (applies to whichever provider is active). */

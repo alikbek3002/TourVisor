@@ -31,16 +31,29 @@ const functionDeclarations: FunctionDeclaration[] = tools.map((t) => ({
 }));
 
 /**
+ * Gemini 3.x replaced thinkingBudget with thinkingLevel (a numeric budget is a
+ * hard 400 there); 2.5-flash models still take thinkingBudget: 0. Either way we
+ * want minimal thinking — this is a snappy sales chat.
+ */
+function thinkingConfigFor(model: string): Record<string, unknown> | undefined {
+  if (/^gemini-[3-9]/.test(model)) return { thinkingLevel: 'low' };
+  if (/flash|lite/i.test(model)) return { thinkingBudget: 0 };
+  return undefined;
+}
+
+/**
  * History is stored in Anthropic MessageParam format — the store's canonical
  * shape, shared with the Claude agent and persisted to Postgres — so switching
- * providers keeps every existing conversation. Convert at request time:
- * assistant→model, tool_use→functionCall, tool_result→functionResponse.
- * Function ids are omitted: Gemini matches responses to calls by name/order,
- * and rejects nothing that way regardless of which provider minted the history.
+ * providers keeps every existing conversation.
+ *
+ * Gemini 3.x validates thought signatures on functionCall parts, and stored
+ * history has none (Claude-era turns never had them; ours are stripped by the
+ * canonical format). So PAST tool loops are rendered as plain text — the model
+ * still sees what was searched and found — while the LIVE loop inside
+ * runGeminiTurn keeps Gemini's own parts verbatim, signatures included.
  */
 export function toGeminiContents(messages: Anthropic.MessageParam[]): Content[] {
   const out: Content[] = [];
-  const toolNames = new Map<string, string>(); // tool_use_id → tool name
   for (const m of messages) {
     const role = m.role === 'assistant' ? 'model' : 'user';
     const parts: Part[] = [];
@@ -52,15 +65,13 @@ export function toGeminiContents(messages: Anthropic.MessageParam[]): Content[] 
         if (block.type === 'text' && block.text.trim()) {
           parts.push({ text: block.text });
         } else if (block.type === 'tool_use') {
-          toolNames.set(block.id, block.name);
           parts.push({
-            functionCall: { name: block.name, args: (block.input ?? {}) as Record<string, unknown> },
+            text: `(вызов инструмента ${block.name} с параметрами ${JSON.stringify(block.input ?? {})})`,
           });
         } else if (block.type === 'tool_result') {
-          const name = toolNames.get(block.tool_use_id) ?? 'unknown_tool';
           const output =
             typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
-          parts.push({ functionResponse: { name, response: { output } } });
+          parts.push({ text: `(результат инструмента: ${output})` });
         }
         // other block types (thinking, images, …) are not produced by this bot
       }
@@ -83,17 +94,19 @@ export async function runGeminiTurn(
   const system = buildSystemPrompt(company.name);
   let escalated = false;
 
+  // Live request contents: converted history + this turn's verbatim exchanges.
+  const contents = toGeminiContents(convo.messages);
+
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
     const response = await getClient().models.generateContent({
       model: config.GEMINI_MODEL,
-      contents: toGeminiContents(convo.messages),
+      contents,
       config: {
         systemInstruction: system,
         tools: [{ functionDeclarations }],
         maxOutputTokens: config.CLAUDE_MAX_TOKENS,
-        // Snappy chat replies; only flash/lite models allow disabling thinking.
-        ...(/flash|lite/i.test(config.GEMINI_MODEL)
-          ? { thinkingConfig: { thinkingBudget: 0 } }
+        ...(thinkingConfigFor(config.GEMINI_MODEL)
+          ? { thinkingConfig: thinkingConfigFor(config.GEMINI_MODEL) }
           : {}),
       },
     });
@@ -106,7 +119,12 @@ export async function runGeminiTurn(
       return { reply: text || FALLBACK_REPLY, escalated };
     }
 
-    // Preserve the model turn (text + tool calls) in the canonical history shape.
+    // Keep the model's own parts verbatim in the live request — Gemini 3.x
+    // requires the thoughtSignature they carry on every functionCall part.
+    const modelParts = response.candidates?.[0]?.content?.parts;
+    contents.push({ role: 'model', parts: modelParts ?? [] });
+
+    // Mirror the turn into the canonical history shape for storage.
     const blocks: Anthropic.ContentBlockParam[] = [];
     if (text) blocks.push({ type: 'text', text });
     const ids = calls.map((fc, i) => fc.id ?? `fc_${Date.now()}_${iter}_${i}`);
@@ -115,7 +133,8 @@ export async function runGeminiTurn(
     });
     conversations.append(convo, { role: 'assistant', content: blocks });
 
-    // Execute every call, collect results into ONE user message.
+    // Execute every call; feed results back both to Gemini and to the store.
+    const responseParts: Part[] = [];
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (let i = 0; i < calls.length; i++) {
       const fc = calls[i]!;
@@ -127,8 +146,16 @@ export async function runGeminiTurn(
         company,
       );
       escalated ||= didEscalate;
+      responseParts.push({
+        functionResponse: {
+          ...(fc.id ? { id: fc.id } : {}),
+          name: fc.name ?? '',
+          response: { output: resultText },
+        },
+      });
       toolResults.push({ type: 'tool_result', tool_use_id: ids[i]!, content: resultText });
     }
+    contents.push({ role: 'user', parts: responseParts });
     conversations.append(convo, { role: 'user', content: toolResults });
   }
 
