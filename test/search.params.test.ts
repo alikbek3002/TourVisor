@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { applyPriceFloor, buildSearchParams, mealCode } from '../src/services/tourvisor/search.js';
+import {
+  applyPriceFloor,
+  buildSearchParams,
+  mealCode,
+  pickTour,
+  rankOptions,
+} from '../src/services/tourvisor/search.js';
 import type { TourOption } from '../src/core/types.js';
+import type { TvHotel } from '../src/services/tourvisor/types.js';
 
 describe('buildSearchParams', () => {
   it('defaults each child age to 7 when not provided', () => {
@@ -38,17 +45,53 @@ describe('buildSearchParams', () => {
     expect(p.nightsto).toBe(10);
   });
 
-  it('passes star and price filters through', () => {
+  it('passes star and price filters through (deriving a budget floor)', () => {
     const p = buildSearchParams({ country: 'Турция', starsFrom: 4, priceTo: 150000 }, '1', '4');
     expect(p.stars).toBe(4);
     expect(p.starsbetter).toBe(1);
     expect(p.priceto).toBe(150000);
+    expect(p.pricefrom).toBe(90000); // named budget → aim near it (60%)
   });
 
-  it('passes a price floor (priceFrom) so pricier options can surface', () => {
+  it('passes a client range exactly — no derivation of the floor', () => {
     const p = buildSearchParams({ country: 'Турция', priceFrom: 4000, priceTo: 6000 }, '1', '4');
     expect(p.pricefrom).toBe(4000);
     expect(p.priceto).toBe(6000);
+    expect(p.stars).toBe(4); // named budget still means decent hotels
+  });
+
+  it('a bare budget ceiling derives a 60% floor and a 4★ class floor', () => {
+    const p = buildSearchParams({ country: 'Турция', priceTo: 5000 }, '1', '4');
+    expect(p.pricefrom).toBe(3000);
+    expect(p.priceto).toBe(5000);
+    expect(p.stars).toBe(4);
+    expect(p.starsbetter).toBe(1);
+  });
+
+  it('explicit "cheapest" keeps the old semantics: no derived floor, no class floor', () => {
+    const p = buildSearchParams({ country: 'Турция', priceTo: 5000, sort: 'cheapest' }, '1', '4');
+    expect(p.pricefrom).toBeUndefined();
+    expect(p.priceto).toBe(5000);
+    expect(p.stars).toBeUndefined();
+  });
+
+  it('relaxed mode drops derived constraints but keeps explicit client values', () => {
+    const derived = buildSearchParams({ country: 'Турция', priceTo: 5000 }, '1', '4', undefined, {
+      relaxed: true,
+    });
+    expect(derived.pricefrom).toBeUndefined();
+    expect(derived.stars).toBeUndefined();
+    expect(derived.priceto).toBe(5000);
+
+    const explicit = buildSearchParams(
+      { country: 'Турция', priceFrom: 4000, priceTo: 6000, starsFrom: 5 },
+      '1',
+      '4',
+      undefined,
+      { relaxed: true },
+    );
+    expect(explicit.pricefrom).toBe(4000);
+    expect(explicit.stars).toBe(5);
   });
 
   it('joins resolved hotel codes into the `hotels` filter', () => {
@@ -70,6 +113,11 @@ describe('buildSearchParams', () => {
   it('keeps an explicit star level over the premium default', () => {
     const p = buildSearchParams({ country: 'Турция', sort: 'premium', starsFrom: 5 }, '1', '4');
     expect(p.stars).toBe(5);
+  });
+
+  it('premium raises a too-low explicit star level to 4★', () => {
+    const p = buildSearchParams({ country: 'Турция', sort: 'premium', starsFrom: 3 }, '1', '4');
+    expect(p.stars).toBe(4); // otherwise the premium re-search is byte-identical
   });
 
   it('does not force a class floor for cheapest/default searches', () => {
@@ -104,6 +152,71 @@ describe('applyPriceFloor', () => {
 
   it('can remove everything when nothing clears the floor', () => {
     expect(applyPriceFloor([opt(1000), opt(2000)], 5000)).toEqual([]);
+  });
+});
+
+describe('rankOptions', () => {
+  const opt = (price: number, stars?: number, rating?: number): TourOption => ({
+    hotelName: `H${price}`,
+    price,
+    stars,
+    rating,
+  });
+
+  it('keeps price-ascending order for explicit cheapest and for no-budget searches', () => {
+    const list = [opt(1000), opt(2000), opt(3000)];
+    expect(rankOptions(list, { sort: 'cheapest', priceTo: 5000 })).toBe(list);
+    expect(rankOptions(list, {})).toBe(list);
+  });
+
+  it('named budget → closest to the ceiling first', () => {
+    const ranked = rankOptions([opt(3100), opt(4900, 4), opt(4200, 5)], { priceTo: 5000 });
+    expect(ranked.map((o) => o.price)).toEqual([4900, 4200, 3100]);
+  });
+
+  it('named budget → quality breaks price ties', () => {
+    const ranked = rankOptions([opt(4900, 3), opt(4900, 5)], { priceTo: 5000 });
+    expect(ranked[0]?.stars).toBe(5);
+  });
+
+  it('premium → best hotels first; unrated 5★ beats rated 3★', () => {
+    const rated3 = opt(2000, 3, 3.8);
+    const unrated5 = opt(1500, 5); // no rating → falls back to stars*0.9 = 4.5
+    const rated49 = opt(3000, 5, 4.9);
+    const ranked = rankOptions([rated3, unrated5, rated49], { sort: 'premium' });
+    expect(ranked.map((o) => o.hotelName)).toEqual([rated49.hotelName, unrated5.hotelName, rated3.hotelName]);
+  });
+});
+
+describe('pickTour', () => {
+  const hotel = (...prices: number[]): TvHotel => ({
+    tours: { tour: prices.map((p) => ({ price: p })) },
+  });
+
+  it('defaults to the cheapest tour (no budget context)', () => {
+    expect(pickTour(hotel(2900, 4800, 3500))?.price).toBe(2900);
+    expect(pickTour(hotel(2900, 4800), { cheap: true, priceTo: 5000 })?.price).toBe(2900);
+  });
+
+  it('with a named budget picks the most expensive tour that fits', () => {
+    expect(pickTour(hotel(2900, 4800, 5600), { priceTo: 5000 })?.price).toBe(4800);
+  });
+
+  it('with a client range picks the priciest tour inside the range', () => {
+    expect(pickTour(hotel(2900, 4500, 5900), { priceFrom: 4000, priceTo: 5000 })?.price).toBe(4500);
+  });
+
+  it('with only an explicit floor picks the cheapest qualifying tour', () => {
+    // The hotel must not be dropped by applyPriceFloor when a pricier tour exists.
+    expect(pickTour(hotel(2900, 5200, 6100), { priceFrom: 5000 })?.price).toBe(5200);
+  });
+
+  it('falls back to the cheapest when nothing fits the budget', () => {
+    expect(pickTour(hotel(5600, 7000), { priceTo: 5000 })?.price).toBe(5600);
+  });
+
+  it('returns undefined for a hotel without tours', () => {
+    expect(pickTour({ tours: { tour: [] } })).toBeUndefined();
   });
 });
 

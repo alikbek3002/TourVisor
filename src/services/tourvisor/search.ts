@@ -18,7 +18,22 @@ import type { TvHotel, TvResultResponse, TvSearchResponse, TvTour } from './type
 const POLL_INITIAL_MS = 4000;
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_MS = 22_000; // keep WhatsApp replies reasonably snappy
-const RESULT_LIMIT = 8;
+const RESULT_LIMIT = 5; // formatOutcomeForModel forwards at most 5 anyway
+
+/**
+ * A named budget means "close to this money", not "as cheap as possible": the
+ * search floor is set to this share of the ceiling, so «до 5000» yields a
+ * 3000–5000 pool instead of the country's cheapest tours.
+ */
+export const BUDGET_FLOOR_RATIO = 0.6;
+
+/** Budget signals used to pick a tour per hotel and to rank the results. */
+export interface BudgetContext {
+  /** EXPLICIT client floor only (derived floors are request-side, not display-side). */
+  priceFrom?: number;
+  priceTo?: number;
+  cheap?: boolean;
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -58,15 +73,71 @@ export async function searchTours(
     }
   }
 
+  const budget: BudgetContext = {
+    priceFrom: input.priceFrom,
+    priceTo: input.priceTo,
+    cheap: input.sort === 'cheapest',
+  };
   const params = buildSearchParams(input, departure, country, hotelCodes);
-  logger.info({ params }, 'tourvisor search start');
+  const relaxedParams = buildSearchParams(input, departure, country, hotelCodes, { relaxed: true });
+  // Whether this search carries constraints WE derived from the budget (floor,
+  // 4★) rather than ones the client named — those are safe to drop on retry.
+  const hasDerived =
+    params.pricefrom !== relaxedParams.pricefrom || params.stars !== relaxedParams.stars;
 
+  logger.info({ params }, 'tourvisor search start');
+  let run = await executeSearch(params, budget);
+  if (run.error) return { status: 'error', options: [], message: run.error };
+
+  let usedFallback = false;
+  if (run.mapped.length === 0 && hasDerived) {
+    // Nothing near the budget with a 4★ floor — retry once without the derived
+    // constraints (the client's own parameters stay) and show the best available.
+    logger.info({ relaxedParams }, 'near-budget search empty — retrying relaxed');
+    run = await executeSearch(relaxedParams, budget);
+    if (run.error) return { status: 'error', options: [], message: run.error };
+    usedFallback = true;
+  }
+
+  const ranked = rankOptions(applyPriceFloor(run.mapped, input.priceFrom), input);
+  const options = ranked.slice(0, RESULT_LIMIT);
+  if (options.length === 0) {
+    // If the client named a price floor and it removed everything, say so
+    // explicitly so the model offers to lower it instead of silently falling
+    // back to the cheap tours the client just rejected.
+    const flooredOut = Boolean(input.priceFrom) && run.mapped.length > 0;
+    let message: string | undefined;
+    if (hotelCodes) {
+      message = `по отелю «${input.hotelName}» на эти даты/условия туров нет — предложи клиенту другие даты, похожие отели того же уровня или убрать часть фильтров`;
+    } else if (flooredOut) {
+      message = `все найденные туры дешевле порога priceFrom=${input.priceFrom}; дороже этой суммы в этих условиях ничего нет — предложи клиенту снизить порог или сменить даты/направление`;
+    } else if (!run.finished) {
+      message = 'поиск не успел завершиться — можно повторить';
+    }
+    return { status: 'empty', options: [], message, note };
+  }
+  if (usedFallback) {
+    const fallbackNote = `Около бюджета ${input.priceTo} с отелями 4★+ ничего не нашлось — показаны лучшие ДОСТУПНЫЕ варианты (дешевле или классом ниже). Честно скажи об этом клиенту и предложи сменить даты/направление, если хочет ближе к бюджету.`;
+    note = note ? `${note}\n${fallbackNote}` : fallbackNote;
+  }
+  await enrichCartLinks(options);
+  return { status: 'ok', options, note };
+}
+
+/** One search.php → poll → result.php round trip, mapped with budget context. */
+async function executeSearch(
+  params: Record<string, string | number | undefined>,
+  budget: BudgetContext,
+): Promise<{ mapped: TourOption[]; finished: boolean; error?: string }> {
   const started = await tvGet<TvSearchResponse>('search.php', params);
   const requestId = started.result?.requestid;
   if (!requestId) {
-    return { status: 'error', options: [], message: started.result?.error ?? started.error ?? 'search.php не вернул requestid' };
+    return {
+      mapped: [],
+      finished: false,
+      error: started.result?.error ?? started.error ?? 'search.php не вернул requestid',
+    };
   }
-
   const finished = await pollUntilReady(String(requestId));
   const result = await tvGet<TvResultResponse>('result.php', {
     requestid: requestId,
@@ -75,40 +146,38 @@ export async function searchTours(
     onpage: 50, // wider set so premium/pricier options are available to rank
     nodescription: 1,
   });
-
-  const mapped = mapResults(result);
-  const ranked = rankOptions(applyPriceFloor(mapped, input.priceFrom), input.sort);
-  const options = ranked.slice(0, RESULT_LIMIT);
-  if (options.length === 0) {
-    // If the client named a price floor and it removed everything, say so
-    // explicitly so the model offers to lower it instead of silently falling
-    // back to the cheap tours the client just rejected.
-    const flooredOut = Boolean(input.priceFrom) && mapped.length > 0;
-    let message: string | undefined;
-    if (hotelCodes) {
-      message = `по отелю «${input.hotelName}» на эти даты/условия туров нет — предложи клиенту другие даты, похожие отели того же уровня или убрать часть фильтров`;
-    } else if (flooredOut) {
-      message = `все найденные туры дешевле порога priceFrom=${input.priceFrom}; дороже этой суммы в этих условиях ничего нет — предложи клиенту снизить порог или сменить даты/направление`;
-    } else if (!finished) {
-      message = 'поиск не успел завершиться — можно повторить';
-    }
-    return { status: 'empty', options: [], message, note };
-  }
-  await enrichCartLinks(options);
-  return { status: 'ok', options, note };
+  return { mapped: mapResults(result, budget), finished };
 }
 
 /**
- * Order results for display. Default 'cheapest' keeps the price-ascending order
- * (budget-conscious). 'premium' surfaces the best hotels first — by rating, then
- * by price descending — so clients asking for pricier/higher-class options don't
- * just get the cheapest ones again.
+ * Order results for display.
+ * - explicit 'cheapest' (or no budget at all) — price ascending (mapResults order);
+ * - named budget (priceTo, not cheapest) — closest to the budget first, better
+ *   hotels breaking ties, so «до 5000» shows the 4700-5000 options, not the 700 ones;
+ * - 'premium' — best hotels first (rating/stars), pricier breaking ties.
  */
-function rankOptions(options: TourOption[], sort?: 'cheapest' | 'premium'): TourOption[] {
-  if (sort !== 'premium') return options; // mapResults already sorts by price asc
-  return [...options].sort(
-    (a, b) => (b.rating ?? 0) - (a.rating ?? 0) || b.price - a.price,
-  );
+export function rankOptions(
+  options: TourOption[],
+  input: Pick<SearchToursInput, 'sort' | 'priceFrom' | 'priceTo'>,
+): TourOption[] {
+  const premium = input.sort === 'premium';
+  const nearBudget = input.sort !== 'cheapest' && Boolean(input.priceTo);
+  if (premium) {
+    return [...options].sort((a, b) => quality(b) - quality(a) || b.price - a.price);
+  }
+  if (nearBudget) {
+    return [...options].sort((a, b) => b.price - a.price || quality(b) - quality(a));
+  }
+  return options; // mapResults already sorts by price asc
+}
+
+/**
+ * Hotel quality for ranking. Tourvisor's hotelrating is often 0/absent — fall
+ * back to stars (slightly discounted) so an unrated 5★ doesn't sink below a
+ * rated 3★.
+ */
+function quality(o: TourOption): number {
+  return o.rating && o.rating > 0 ? o.rating : (o.stars ?? 0) * 0.9;
 }
 
 /**
@@ -140,6 +209,7 @@ export function buildSearchParams(
   departure: string,
   country: string,
   hotelCodes?: string[],
+  opts?: { relaxed?: boolean },
 ): Record<string, string | number | undefined> {
   const { datefrom, dateto } = resolveDateRange(input.dateFrom, input.dateTo);
   const nightsfrom = input.nightsFrom ?? 7;
@@ -168,11 +238,24 @@ export function buildSearchParams(
     params[`childage${i + 1}`] = age != null && age >= 0 && age <= 17 ? age : 7;
   }
 
-  // For premium/pricier requests, force a class floor so Tourvisor actually
-  // returns higher-end hotels instead of the cheapest set re-sorted. If the
-  // client/model didn't specify a star level, default to 4★+.
+  // Budget semantics live HERE, not in the model's judgement:
+  // - a named ceiling (priceTo, and the client didn't ask for "подешевле")
+  //   means "close to this money" → derive a floor at BUDGET_FLOOR_RATIO and
+  //   a 4★ class floor, so the candidate pool is actually near the budget;
+  // - premium always means at least 4★, even when starsFrom was sent lower;
+  // - explicit client values (priceFrom, starsFrom, a range) always win.
+  // `relaxed: true` drops only the DERIVED constraints — used for the retry
+  // when nothing exists near the budget.
+  const cheap = input.sort === 'cheapest';
   const premium = input.sort === 'premium';
-  const starsFrom = input.starsFrom ?? (premium ? 4 : undefined);
+  const nearBudget = !cheap && Boolean(input.priceTo);
+  const derive = !opts?.relaxed;
+
+  let starsFrom = input.starsFrom;
+  if (derive) {
+    if (premium) starsFrom = Math.max(starsFrom ?? 0, 4);
+    else if (nearBudget && starsFrom == null) starsFrom = 4;
+  }
   if (starsFrom) {
     params.stars = starsFrom;
     params.starsbetter = 1;
@@ -182,6 +265,7 @@ export function buildSearchParams(
 
   if (input.priceTo) params.priceto = input.priceTo;
   if (input.priceFrom) params.pricefrom = input.priceFrom;
+  else if (derive && nearBudget) params.pricefrom = Math.round(input.priceTo! * BUDGET_FLOOR_RATIO);
 
   const meal = mealCode(input.meal);
   if (meal) {
@@ -219,12 +303,12 @@ async function pollUntilReady(requestId: string): Promise<boolean> {
   return false;
 }
 
-export function mapResults(res: TvResultResponse): TourOption[] {
+export function mapResults(res: TvResultResponse, budget?: BudgetContext): TourOption[] {
   const hotels = toArray(res.data?.result?.hotel);
   const options: TourOption[] = [];
 
   for (const hotel of hotels) {
-    const best = cheapestTour(hotel);
+    const best = pickTour(hotel, budget);
     if (!best) continue;
     const price = num(best.price) ?? num(hotel.price);
     if (price === undefined) continue;
@@ -248,14 +332,34 @@ export function mapResults(res: TvResultResponse): TourOption[] {
   return options;
 }
 
-function cheapestTour(hotel: TvHotel): TvTour | undefined {
+/**
+ * Pick the hotel's representative tour. Historically this was always the
+ * CHEAPEST one, which made a 5★ hotel with a $4800 suite show up (and rank) as
+ * its $2900 standard room. With a named budget we take the most expensive tour
+ * that still fits, so each hotel is represented by its closest-to-budget offer.
+ * With only an explicit floor — the cheapest tour that clears it, so the hotel
+ * isn't dropped by applyPriceFloor when a qualifying tour exists.
+ */
+export function pickTour(hotel: TvHotel, budget?: BudgetContext): TvTour | undefined {
   const tours = toArray(hotel.tours?.tour);
   if (tours.length === 0) return undefined;
-  return tours.reduce((min, t) => {
-    const p = num(t.price) ?? Infinity;
-    const mp = num(min.price) ?? Infinity;
-    return p < mp ? t : min;
-  });
+  const priceOf = (t: TvTour): number => num(t.price) ?? Infinity;
+
+  if (budget && !budget.cheap && budget.priceTo) {
+    const fits = tours.filter((t) => {
+      const p = num(t.price);
+      return p != null && p <= budget.priceTo! && (budget.priceFrom == null || p >= budget.priceFrom);
+    });
+    if (fits.length) return fits.reduce((max, t) => (priceOf(t) > priceOf(max) ? t : max));
+  } else if (budget?.priceFrom) {
+    const above = tours.filter((t) => {
+      const p = num(t.price);
+      return p != null && p >= budget.priceFrom!;
+    });
+    if (above.length) return above.reduce((min, t) => (priceOf(t) < priceOf(min) ? t : min));
+  }
+
+  return tours.reduce((min, t) => (priceOf(t) < priceOf(min) ? t : min));
 }
 
 /** Build the client-facing tour link from TOUR_LINK_TEMPLATE, else Tourvisor's own. */

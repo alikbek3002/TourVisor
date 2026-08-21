@@ -107,6 +107,7 @@ function formatOutcomeForModel(outcome: TourSearchOutcome): string {
   const lines = outcome.options.slice(0, 5).map((o, i) => {
     const parts = [
       `${i + 1}. ${o.hotelName}${o.stars ? ` ${o.stars}★` : ''}`,
+      o.rating && o.rating > 0 ? `рейтинг ${o.rating}` : undefined,
       o.region && `${o.region}${o.country ? `, ${o.country}` : ''}`,
       o.meal,
       o.nights && `${o.nights} ноч.`,
