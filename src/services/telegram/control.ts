@@ -3,6 +3,7 @@ import { config } from '../../config.js';
 import { logger } from '../../logger.js';
 import { companies, type Company } from '../../core/companies.js';
 import { conversations, type Conversation } from '../../core/conversation.js';
+import { DEMO_SESSION } from './demo.js';
 import { postJson } from '../../util/http.js';
 import { apiUrl, escapeHtml, sendTelegram, sendTelegramPhoto } from './notifier.js';
 import {
@@ -105,6 +106,7 @@ function findConvos(arg: string): Conversation[] {
 
 /** Human label for a conversation's tenant. */
 function companyLabel(session: string): string {
+  if (session === DEMO_SESSION) return `${config.DEMO_COMPANY_NAME} (демо)`;
   return companies.bySession(session)?.name ?? session;
 }
 
@@ -201,6 +203,12 @@ async function handleStatus(to: string): Promise<void> {
       `• ${escapeHtml(c.name)}: <b>${status}</b> — диалогов ${s.total} (на менеджере: ${s.human})`,
     );
   });
+  if (config.features.telegramDemo) {
+    const d = perSession.get(DEMO_SESSION) ?? { total: 0, human: 0 };
+    lines.push(
+      `• ${escapeHtml(config.DEMO_COMPANY_NAME)} (демо, Telegram): диалогов ${d.total} (на менеджере: ${d.human})`,
+    );
+  }
   const humans = conversations
     .listHuman(15)
     .map((h) => `• +${h.phone} — ${escapeHtml(companyLabel(h.session))}`)

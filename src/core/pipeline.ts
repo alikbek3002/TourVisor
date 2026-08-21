@@ -3,7 +3,7 @@ import { logger } from '../logger.js';
 import { companies } from './companies.js';
 import { conversations, convoKey } from './conversation.js';
 import { matchesAllowlist } from './allowlist.js';
-import { runAgentTurn } from '../services/claude/agent.js';
+import { runAgentTurn } from '../services/ai/index.js';
 import { searchTours } from '../services/tourvisor/search.js';
 import { notifyAdmin, notifyError } from '../services/telegram/notifier.js';
 import { sendSeen, sendText, startTyping, stopTyping } from '../services/waha/client.js';
@@ -113,8 +113,8 @@ async function handleInbound(msg: InboundMessage): Promise<void> {
 
   conversations.appendUser(convo, msg.text);
 
-  // If AI is not configured, hand off to a human immediately.
-  if (!config.features.claude) {
+  // If no AI provider is configured, hand off to a human immediately.
+  if (!config.features.ai) {
     conversations.handToHuman(convo);
     await notifyAdmin({
       reason: 'manager_request',

@@ -5,12 +5,17 @@ import { createServer } from './server.js';
 
 async function main(): Promise<void> {
   logger.info(
-    { features: config.features, model: config.CLAUDE_MODEL, env: config.NODE_ENV },
+    {
+      features: config.features,
+      model: config.features.gemini ? config.GEMINI_MODEL : config.CLAUDE_MODEL,
+      env: config.NODE_ENV,
+    },
     'starting Aisuluu Tourbot',
   );
 
   // Warn loudly about anything not configured so setup problems are obvious.
-  if (!config.features.claude) logger.warn('Claude disabled (no ANTHROPIC_API_KEY or DISABLE_AI=true)');
+  if (!config.features.ai)
+    logger.warn('AI disabled (no GEMINI_API_KEY / ANTHROPIC_API_KEY or DISABLE_AI=true)');
   if (!config.features.tourvisor) logger.warn('Tourvisor disabled (missing TOURVISOR_AUTH_LOGIN/PASS)');
   if (!config.features.telegram) logger.warn('Telegram alerts disabled (missing token/chat id)');
   if (!config.features.postgres)
@@ -62,6 +67,14 @@ async function main(): Promise<void> {
     await initTelegramControl();
   } catch (err) {
     logger.warn({ err: (err as Error).message }, 'Telegram control init skipped/failed');
+  }
+
+  // Public demo bot (second Telegram token) — lets prospects try the assistant.
+  try {
+    const { initDemoBot } = await import('./services/telegram/demo.js');
+    await initDemoBot();
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, 'Telegram demo bot init skipped/failed');
   }
 
   const shutdown = (signal: string) => {

@@ -24,9 +24,13 @@ const EnvSchema = z.object({
   /** Public base URL of THIS backend (used to auto-register the WAHA webhook). */
   PUBLIC_URL: z.string().url().optional(),
 
-  // --- Claude (Anthropic) ---
+  // --- AI providers ---
+  // Gemini is preferred when its key is set; Claude is the fallback provider.
+  GEMINI_API_KEY: z.string().min(1).optional(),
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   CLAUDE_MODEL: z.string().default('claude-sonnet-5'),
+  /** Max output tokens per turn (applies to whichever provider is active). */
   CLAUDE_MAX_TOKENS: z.coerce.number().int().positive().default(1024),
 
   // --- Tourvisor ---
@@ -67,6 +71,12 @@ const EnvSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   /** Chat id(s) (comma-separated) that receive alerts and may control the bot. */
   TELEGRAM_ADMIN_CHAT_ID: z.string().optional(),
+
+  // --- Telegram demo bot (public-facing AI demo) ---
+  /** Separate bot token: anyone can chat with the tour assistant in Telegram. */
+  TELEGRAM_DEMO_BOT_TOKEN: z.string().optional(),
+  /** Agency name the demo assistant introduces itself with. */
+  DEMO_COMPANY_NAME: z.string().default('Демо Тревел'),
 
   // --- Business / handoff ---
   COMPANY_NAME: z.string().default('Aisuluu Travel'),
@@ -122,9 +132,13 @@ export const config = {
   /** Telegram chat ids (admins) that receive alerts and may control the bot. */
   adminChatIds,
   features: {
+    gemini: Boolean(env.GEMINI_API_KEY) && !env.DISABLE_AI,
     claude: Boolean(env.ANTHROPIC_API_KEY) && !env.DISABLE_AI,
+    /** Some AI provider is available (Gemini preferred, Claude fallback). */
+    ai: Boolean(env.GEMINI_API_KEY || env.ANTHROPIC_API_KEY) && !env.DISABLE_AI,
     tourvisor: Boolean(env.TOURVISOR_AUTH_LOGIN && env.TOURVISOR_AUTH_PASS),
     telegram: Boolean(env.TELEGRAM_BOT_TOKEN) && adminChatIds.length > 0,
+    telegramDemo: Boolean(env.TELEGRAM_DEMO_BOT_TOKEN),
     postgres: Boolean(env.DATABASE_URL),
   },
 } as const;
