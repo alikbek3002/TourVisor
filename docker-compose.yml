@@ -26,9 +26,11 @@ services:
       # Auto-start the default session on boot.
       WHATSAPP_START_SESSION: default
       WHATSAPP_RESTART_ALL_SESSIONS: 'True'
-      # Deliver inbound messages to the bot (compose-internal DNS name "bot").
+      # Deliver events to the bot (compose-internal DNS name "bot"). Applies to
+      # ALL sessions (multi-tenant companies included). 'message.any' catches a
+      # manager replying manually; 'session.status' announces company connects.
       WHATSAPP_HOOK_URL: http://bot:3000/webhooks/waha${WAHA_WEBHOOK_SECRET:+/}${WAHA_WEBHOOK_SECRET:-}
-      WHATSAPP_HOOK_EVENTS: message
+      WHATSAPP_HOOK_EVENTS: message,message.any,session.status
       # Dashboard UI (separate from API key).
       WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-waha}
       WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-waha}

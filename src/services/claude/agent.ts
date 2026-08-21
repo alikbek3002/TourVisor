@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../../config.js';
 import { logger } from '../../logger.js';
+import type { Company } from '../../core/companies.js';
 import type { Conversation } from '../../core/conversation.js';
 import { conversations } from '../../core/conversation.js';
 import type { TourSearchOutcome } from '../../core/types.js';
@@ -37,8 +38,12 @@ export interface AgentResult {
  * `convo.messages`. Drives the tool-use loop until the model stops calling
  * tools, then returns the text to send back on WhatsApp.
  */
-export async function runAgentTurn(convo: Conversation, deps: AgentDeps): Promise<AgentResult> {
-  const system = buildSystemPrompt();
+export async function runAgentTurn(
+  convo: Conversation,
+  deps: AgentDeps,
+  company: Company,
+): Promise<AgentResult> {
+  const system = buildSystemPrompt(company.name);
   let escalated = false;
 
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
@@ -62,7 +67,7 @@ export async function runAgentTurn(convo: Conversation, deps: AgentDeps): Promis
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of response.content) {
       if (block.type !== 'tool_use') continue;
-      const { text, didEscalate } = await executeTool(block.name, block.input, convo, deps);
+      const { text, didEscalate } = await executeTool(block.name, block.input, convo, deps, company);
       escalated ||= didEscalate;
       toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: text });
     }
@@ -82,6 +87,7 @@ async function executeTool(
   input: unknown,
   convo: Conversation,
   deps: AgentDeps,
+  company: Company,
 ): Promise<{ text: string; didEscalate: boolean }> {
   try {
     switch (name) {
@@ -100,6 +106,8 @@ async function executeTool(
           clientPhone: convo.phone,
           clientChatId: convo.chatId,
           clientName: convo.name || convo.lead.name,
+          company: company.name,
+          session: convo.session,
           summary: args.summary + (args.urgency === 'high' ? ' [СРОЧНО]' : ''),
           lastMessage: lastUserText(convo),
           tourLink: args.tourLink,

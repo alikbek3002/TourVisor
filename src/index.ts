@@ -28,6 +28,15 @@ async function main(): Promise<void> {
     );
   }
 
+  // Tenant registry: must be loaded before we accept webhooks, or inbound
+  // messages would hit an unknown session and be dropped.
+  try {
+    const { companies } = await import('./core/companies.js');
+    await companies.init();
+  } catch (err) {
+    logger.error({ err: (err as Error).message }, 'company registry init failed');
+  }
+
   const app = createServer();
 
   const server = app.listen(config.PORT, () => {

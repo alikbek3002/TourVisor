@@ -20,7 +20,7 @@ export interface ConversationPersistence {
   /** Insert or update one conversation. */
   upsert(convo: Conversation): Promise<void>;
   /** Remove a conversation (used when it's swept for inactivity). */
-  delete(chatId: string): Promise<void>;
+  delete(session: string, chatId: string): Promise<void>;
 }
 
 class PostgresPersistence implements ConversationPersistence {
@@ -39,7 +39,8 @@ class PostgresPersistence implements ConversationPersistence {
   async init(): Promise<void> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS conversations (
-        chat_id     TEXT PRIMARY KEY,
+        session     TEXT NOT NULL DEFAULT 'default',
+        chat_id     TEXT NOT NULL,
         phone       TEXT NOT NULL,
         name        TEXT,
         mode        TEXT NOT NULL,
@@ -47,9 +48,33 @@ class PostgresPersistence implements ConversationPersistence {
         messages    JSONB NOT NULL DEFAULT '[]'::jsonb,
         lead        JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at  BIGINT NOT NULL,
-        updated_at  BIGINT NOT NULL
+        updated_at  BIGINT NOT NULL,
+        PRIMARY KEY (session, chat_id)
       );
     `);
+    // Migrate pre-multitenant installs (chat_id-only PK) in place, idempotently.
+    await this.pool.query(
+      `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS session TEXT NOT NULL DEFAULT 'default';`,
+    );
+    await this.pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.key_column_usage
+          WHERE table_name = 'conversations'
+            AND constraint_name = 'conversations_pkey'
+            AND column_name = 'session'
+        ) THEN
+          ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_pkey;
+          ALTER TABLE conversations ADD CONSTRAINT conversations_pkey PRIMARY KEY (session, chat_id);
+        END IF;
+      END $$;
+    `);
+    if (config.WAHA_SESSION !== 'default') {
+      // Old rows predate the session column; move them under the owner's session.
+      await this.pool.query(`UPDATE conversations SET session = $1 WHERE session = 'default'`, [
+        config.WAHA_SESSION,
+      ]);
+    }
     await this.pool.query(
       `CREATE INDEX IF NOT EXISTS conversations_updated_at_idx ON conversations (updated_at);`,
     );
@@ -57,7 +82,7 @@ class PostgresPersistence implements ConversationPersistence {
 
   async loadAll(sinceMs: number): Promise<Conversation[]> {
     const { rows } = await this.pool.query(
-      `SELECT chat_id, phone, name, mode, muted_until, messages, lead, created_at, updated_at
+      `SELECT session, chat_id, phone, name, mode, muted_until, messages, lead, created_at, updated_at
          FROM conversations
         WHERE updated_at >= $1
         ORDER BY updated_at DESC
@@ -70,9 +95,9 @@ class PostgresPersistence implements ConversationPersistence {
   async upsert(c: Conversation): Promise<void> {
     await this.pool.query(
       `INSERT INTO conversations
-         (chat_id, phone, name, mode, muted_until, messages, lead, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)
-       ON CONFLICT (chat_id) DO UPDATE SET
+         (session, chat_id, phone, name, mode, muted_until, messages, lead, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10)
+       ON CONFLICT (session, chat_id) DO UPDATE SET
          phone       = EXCLUDED.phone,
          name        = EXCLUDED.name,
          mode        = EXCLUDED.mode,
@@ -81,6 +106,7 @@ class PostgresPersistence implements ConversationPersistence {
          lead        = EXCLUDED.lead,
          updated_at  = EXCLUDED.updated_at`,
       [
+        c.session,
         c.chatId,
         c.phone,
         c.name ?? null,
@@ -94,12 +120,16 @@ class PostgresPersistence implements ConversationPersistence {
     );
   }
 
-  async delete(chatId: string): Promise<void> {
-    await this.pool.query(`DELETE FROM conversations WHERE chat_id = $1`, [chatId]);
+  async delete(session: string, chatId: string): Promise<void> {
+    await this.pool.query(`DELETE FROM conversations WHERE session = $1 AND chat_id = $2`, [
+      session,
+      chatId,
+    ]);
   }
 }
 
 interface ConversationRow {
+  session: string;
   chat_id: string;
   phone: string;
   name: string | null;
@@ -113,6 +143,7 @@ interface ConversationRow {
 
 function rowToConversation(r: ConversationRow): Conversation {
   return {
+    session: r.session,
     chatId: r.chat_id,
     phone: r.phone,
     name: r.name ?? undefined,

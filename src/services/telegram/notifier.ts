@@ -108,6 +108,10 @@ export interface LeadAlert {
   clientName?: string;
   /** WhatsApp chatId (may be an "@lid" id) — used for the resume button. */
   clientChatId?: string;
+  /** Which tenant company this lead belongs to (shown on the alert card). */
+  company?: string;
+  /** WAHA session of that company — needed by the resume button. */
+  session?: string;
   summary: string; // what the client wants / the problem
   lastMessage?: string;
   tourLink?: string;
@@ -135,6 +139,7 @@ export async function notifyAdmin(alert: LeadAlert): Promise<void> {
   const lines = [
     `<b>${REASON_LABEL[alert.reason]}</b>`,
     '',
+    ...(alert.company ? [`<b>Компания:</b> ${escapeHtml(alert.company)}`] : []),
     `<b>Клиент:</b> ${escapeHtml(alert.clientName || 'без имени')}${
       phoneKnown ? ` (+${alert.clientPhone})` : ' (номер скрыт WhatsApp)'
     }`,
@@ -149,8 +154,13 @@ export async function notifyAdmin(alert: LeadAlert): Promise<void> {
   }
   if (alert.tourLink) buttons.push([{ text: '🔗 Открыть тур', url: alert.tourLink }]);
   // Let the manager hand the conversation back to the bot with one tap.
+  // New format carries the tenant session: resume:<session>:<chatId>.
+  const target = chatId ?? `${alert.clientPhone}@c.us`;
   buttons.push([
-    { text: '▶️ Вернуть диалог боту', callback_data: `resume:${chatId ?? `${alert.clientPhone}@c.us`}` },
+    {
+      text: '▶️ Вернуть диалог боту',
+      callback_data: alert.session ? `resume:${alert.session}:${target}` : `resume:${target}`,
+    },
   ]);
 
   await sendTelegram(lines.join('\n'), { buttons: buttons.length ? buttons : undefined });

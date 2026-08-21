@@ -5,9 +5,11 @@ import type { ConversationPersistence } from './persistence.js';
 /**
  * In-memory per-user conversation store.
  *
- * Keyed by WhatsApp chatId. Holds the Claude message history plus lead/handoff
- * state. This is intentionally simple (a Map) — good enough for a single Railway
- * instance. Swap for Redis/Postgres if you scale horizontally (see README).
+ * Keyed by (WAHA session, WhatsApp chatId) — the same client phone talking to
+ * two different companies is two independent conversations. Holds the Claude
+ * message history plus lead/handoff state. This is intentionally simple (a Map)
+ * — good enough for a single Railway instance. Swap for Redis/Postgres if you
+ * scale horizontally (see README).
  */
 
 export type ConversationMode = 'bot' | 'human';
@@ -25,6 +27,7 @@ export interface Lead {
 }
 
 export interface Conversation {
+  session: string; // WAHA session (tenant), e.g. company-2
   chatId: string; // e.g. 996555123456@c.us
   phone: string; // digits only, e.g. 996555123456
   name?: string;
@@ -77,6 +80,11 @@ export function sanitizeHistory(
   return start === 0 ? messages : messages.slice(start);
 }
 
+/** Map key. Sessions and chatIds never contain ':' — split on the first one. */
+export function convoKey(session: string, chatId: string): string {
+  return `${session}:${chatId}`;
+}
+
 class ConversationStore {
   private map = new Map<string, Conversation>();
   private persistence: ConversationPersistence | null = null;
@@ -92,13 +100,14 @@ class ConversationStore {
     // head), otherwise those chats keep 400-ing forever.
     let repaired = 0;
     for (const c of rows) {
+      const key = convoKey(c.session, c.chatId);
       const fixed = sanitizeHistory(c.messages);
       if (fixed !== c.messages) {
         c.messages = fixed;
         repaired++;
-        this.markDirty(c.chatId);
+        this.markDirty(key);
       }
-      this.map.set(c.chatId, c);
+      this.map.set(key, c);
     }
     logger.info({ loaded: rows.length, repaired }, 'conversations hydrated from persistence');
     if (!this.flushTimer) {
@@ -107,29 +116,41 @@ class ConversationStore {
     }
   }
 
-  get(chatId: string): Conversation | undefined {
-    return this.map.get(chatId);
+  get(session: string, chatId: string): Conversation | undefined {
+    return this.map.get(convoKey(session, chatId));
   }
 
-  /** Find a conversation by phone digits (handles @c.us vs @lid chatId suffixes). */
-  getByPhone(phone: string): Conversation | undefined {
+  /** All conversations with this phone across tenants (handles @c.us vs @lid suffixes). */
+  getAllByPhone(phone: string): Conversation[] {
     const digits = phone.replace(/\D/g, '');
-    if (!digits) return undefined;
+    if (!digits) return [];
+    const out: Conversation[] = [];
     for (const c of this.map.values()) {
-      if (c.phone === digits) return c;
+      if (c.phone === digits) out.push(c);
     }
-    return undefined;
+    return out;
+  }
+
+  /** Conversations with this chatId across sessions (admin commands, legacy buttons). */
+  findAllByChatId(chatId: string): Conversation[] {
+    const out: Conversation[] = [];
+    for (const c of this.map.values()) {
+      if (c.chatId === chatId) out.push(c);
+    }
+    return out;
   }
 
   /** Remove a conversation entirely — the client starts fresh on their next message. */
-  remove(chatId: string): void {
-    if (this.map.delete(chatId)) this.markDirty(chatId);
+  remove(session: string, chatId: string): void {
+    if (this.map.delete(convoKey(session, chatId))) this.markDirty(convoKey(session, chatId));
   }
 
-  getOrCreate(chatId: string, phone: string, name?: string): Conversation {
-    let convo = this.map.get(chatId);
+  getOrCreate(session: string, chatId: string, phone: string, name?: string): Conversation {
+    const key = convoKey(session, chatId);
+    let convo = this.map.get(key);
     if (!convo) {
       convo = {
+        session,
         chatId,
         phone,
         name,
@@ -140,19 +161,19 @@ class ConversationStore {
         createdAt: nowMs(),
         updatedAt: nowMs(),
       };
-      this.map.set(chatId, convo);
-      this.markDirty(chatId);
+      this.map.set(key, convo);
+      this.markDirty(key);
     } else {
       if (name && !convo.name) {
         convo.name = name;
-        this.markDirty(chatId);
+        this.markDirty(key);
       }
       // Upgrade a placeholder phone (the "@lid" id copied from the chatId) once
       // the real number gets resolved from a later message.
       const lidDigits = chatId.split('@')[0]?.replace(/\D/g, '') ?? '';
       if (phone && phone !== lidDigits && convo.phone !== phone) {
         convo.phone = phone;
-        this.markDirty(chatId);
+        this.markDirty(key);
       }
     }
     return convo;
@@ -214,11 +235,23 @@ class ConversationStore {
     return { total: this.map.size, human };
   }
 
-  /** List chats currently handled by a human (for status reporting). */
-  listHuman(limit = 20): Array<{ phone: string; chatId: string }> {
-    const out: Array<{ phone: string; chatId: string }> = [];
+  /** Per-tenant counts for the multi-company /status view. */
+  statsBySession(): Map<string, { total: number; human: number }> {
+    const out = new Map<string, { total: number; human: number }>();
     for (const c of this.map.values()) {
-      if (c.mode === 'human') out.push({ phone: c.phone, chatId: c.chatId });
+      const s = out.get(c.session) ?? { total: 0, human: 0 };
+      s.total++;
+      if (c.mode === 'human') s.human++;
+      out.set(c.session, s);
+    }
+    return out;
+  }
+
+  /** List chats currently handled by a human (for status reporting). */
+  listHuman(limit = 20): Array<{ phone: string; chatId: string; session: string }> {
+    const out: Array<{ phone: string; chatId: string; session: string }> = [];
+    for (const c of this.map.values()) {
+      if (c.mode === 'human') out.push({ phone: c.phone, chatId: c.chatId, session: c.session });
       if (out.length >= limit) break;
     }
     return out;
@@ -227,26 +260,29 @@ class ConversationStore {
   private touch(convo: Conversation): void {
     convo.updatedAt = nowMs();
     convo.messages = sanitizeHistory(convo.messages);
-    this.markDirty(convo.chatId);
+    this.markDirty(convoKey(convo.session, convo.chatId));
   }
 
-  private markDirty(chatId: string): void {
-    if (this.persistence) this.dirty.add(chatId);
+  private markDirty(key: string): void {
+    if (this.persistence) this.dirty.add(key);
   }
 
   /** Write pending changes to storage (write-behind, coalesced). */
   private async flush(): Promise<void> {
     if (!this.persistence || this.dirty.size === 0) return;
-    const ids = [...this.dirty];
+    const keys = [...this.dirty];
     this.dirty.clear();
-    for (const id of ids) {
-      const convo = this.map.get(id);
+    for (const key of keys) {
+      const convo = this.map.get(key);
       try {
         if (convo) await this.persistence.upsert(convo);
-        else await this.persistence.delete(id);
+        else {
+          const sep = key.indexOf(':');
+          await this.persistence.delete(key.slice(0, sep), key.slice(sep + 1));
+        }
       } catch (err) {
-        this.dirty.add(id); // retry on the next tick
-        logger.debug({ err: (err as Error).message, chatId: id }, 'persist flush failed');
+        this.dirty.add(key); // retry on the next tick
+        logger.debug({ err: (err as Error).message, key }, 'persist flush failed');
       }
     }
   }

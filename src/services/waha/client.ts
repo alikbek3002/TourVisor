@@ -51,7 +51,8 @@ export function isSystemChat(chatId: string): boolean {
 // WE sent — message ids AND text — and treat any fromMe message we don't
 // recognize as a manual manager reply. The text check is a safety net so a
 // mismatched id format can never make the bot mistake its own send for a manual
-// one and pause itself.
+// one and pause itself. Keys are scoped per session: tenants share the greeting
+// text, so an unscoped text match would hide a manual reply in another tenant.
 const SENT_TTL_MS = 5 * 60_000;
 const sentIds = new Map<string, number>();
 const sentTexts = new Map<string, number>();
@@ -81,41 +82,41 @@ function idsOf(o: unknown): string[] {
   return candidates.filter((c): c is string => typeof c === 'string' && c.length > 0);
 }
 
-function rememberSent(resp: unknown, text: string): void {
+function rememberSent(session: string, resp: unknown, text: string): void {
   const now = Date.now();
-  for (const id of idsOf(resp)) sentIds.set(id, now);
-  if (text.trim()) sentTexts.set(normText(text), now);
+  for (const id of idsOf(resp)) sentIds.set(`${session}|${id}`, now);
+  if (text.trim()) sentTexts.set(`${session}|${normText(text)}`, now);
   if (sentIds.size + sentTexts.size > 1000) sweepSent(now);
 }
 
 /** True if this fromMe payload is (very likely) a message the bot itself sent. */
-export function looksLikeBotSend(p: WahaMessagePayload): boolean {
+export function looksLikeBotSend(session: string, p: WahaMessagePayload): boolean {
   const cutoff = Date.now() - SENT_TTL_MS;
   for (const id of idsOf(p)) {
-    const t = sentIds.get(id);
+    const t = sentIds.get(`${session}|${id}`);
     if (t != null && t >= cutoff) return true;
   }
   const body = typeof p.body === 'string' ? normText(p.body) : '';
-  const tt = body ? sentTexts.get(body) : undefined;
+  const tt = body ? sentTexts.get(`${session}|${body}`) : undefined;
   return tt != null && tt >= cutoff;
 }
 
 // --- messaging --------------------------------------------------------------
 
-export async function sendText(chatId: string, text: string): Promise<void> {
+export async function sendText(session: string, chatId: string, text: string): Promise<void> {
   const resp = await postJson(
     url('/api/sendText'),
-    { session: config.WAHA_SESSION, chatId, text },
+    { session, chatId, text },
     { headers: headers(), retries: 2 },
   );
-  rememberSent(resp, text);
+  rememberSent(session, resp, text);
 }
 
-export async function startTyping(chatId: string): Promise<void> {
+export async function startTyping(session: string, chatId: string): Promise<void> {
   try {
     await postJson(
       url('/api/startTyping'),
-      { session: config.WAHA_SESSION, chatId },
+      { session, chatId },
       { headers: headers(), retries: 0, timeoutMs: 5000 },
     );
   } catch {
@@ -123,11 +124,11 @@ export async function startTyping(chatId: string): Promise<void> {
   }
 }
 
-export async function stopTyping(chatId: string): Promise<void> {
+export async function stopTyping(session: string, chatId: string): Promise<void> {
   try {
     await postJson(
       url('/api/stopTyping'),
-      { session: config.WAHA_SESSION, chatId },
+      { session, chatId },
       { headers: headers(), retries: 0, timeoutMs: 5000 },
     );
   } catch {
@@ -135,11 +136,11 @@ export async function stopTyping(chatId: string): Promise<void> {
   }
 }
 
-export async function sendSeen(chatId: string): Promise<void> {
+export async function sendSeen(session: string, chatId: string): Promise<void> {
   try {
     await postJson(
       url('/api/sendSeen'),
-      { session: config.WAHA_SESSION, chatId },
+      { session, chatId },
       { headers: headers(), retries: 0, timeoutMs: 5000 },
     );
   } catch {
@@ -149,22 +150,22 @@ export async function sendSeen(chatId: string): Promise<void> {
 
 // --- sessions ---------------------------------------------------------------
 
-export async function getSession(): Promise<WahaSessionInfo | null> {
+export async function getSession(session: string): Promise<WahaSessionInfo | null> {
   try {
-    return await getJson<WahaSessionInfo>(url(`/api/sessions/${config.WAHA_SESSION}`), {
+    return await getJson<WahaSessionInfo>(url(`/api/sessions/${session}`), {
       headers: headers(),
       retries: 1,
     });
   } catch (err) {
-    logger.debug({ err: (err as Error).message }, 'getSession failed');
+    logger.debug({ err: (err as Error).message, session }, 'getSession failed');
     return null;
   }
 }
 
 /** Restart the WAHA session (recovers from STOPPED/FAILED before showing a QR). */
-export async function restartSession(): Promise<void> {
+export async function restartSession(session: string): Promise<void> {
   await postJson(
-    url(`/api/sessions/${config.WAHA_SESSION}/restart`),
+    url(`/api/sessions/${session}/restart`),
     {},
     { headers: headers(), retries: 1, timeoutMs: 20_000 },
   );
@@ -174,16 +175,16 @@ export async function restartSession(): Promise<void> {
  * Request a WhatsApp pairing code for `phone` (digits only). The user enters it
  * via WhatsApp → Linked devices → "Link with phone number instead" — no QR scan.
  */
-export async function requestPairingCode(phone: string): Promise<string | null> {
+export async function requestPairingCode(session: string, phone: string): Promise<string | null> {
   try {
     const res = await postJson<{ code?: string }>(
-      url(`/api/${config.WAHA_SESSION}/auth/request-code`),
+      url(`/api/${session}/auth/request-code`),
       { phoneNumber: phone },
       { headers: headers(), retries: 1, timeoutMs: 20_000 },
     );
     return res?.code ?? null;
   } catch (err) {
-    logger.debug({ err: (err as Error).message }, 'requestPairingCode failed');
+    logger.debug({ err: (err as Error).message, session }, 'requestPairingCode failed');
     return null;
   }
 }
@@ -191,18 +192,18 @@ export async function requestPairingCode(phone: string): Promise<string | null> 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Stop the WAHA session. */
-export async function stopSession(): Promise<void> {
-  await postJson(url(`/api/sessions/${config.WAHA_SESSION}/stop`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
+export async function stopSession(session: string): Promise<void> {
+  await postJson(url(`/api/sessions/${session}/stop`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
 }
 
 /** Start the WAHA session. */
-export async function startSession(): Promise<void> {
-  await postJson(url(`/api/sessions/${config.WAHA_SESSION}/start`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
+export async function startSession(session: string): Promise<void> {
+  await postJson(url(`/api/sessions/${session}/start`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
 }
 
 /** Log the session out — clears stored credentials (recovers a stale-creds login loop). */
-export async function logoutSession(): Promise<void> {
-  await postJson(url(`/api/sessions/${config.WAHA_SESSION}/logout`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
+export async function logoutSession(session: string): Promise<void> {
+  await postJson(url(`/api/sessions/${session}/logout`), {}, { headers: headers(), retries: 1, timeoutMs: 20_000 });
 }
 
 /**
@@ -211,13 +212,13 @@ export async function logoutSession(): Promise<void> {
  * phone unlinked the device → STARTING/FAILED loop), it does a full
  * stop → logout → start to clear the credentials.
  */
-export async function ensureScannable(): Promise<string> {
-  const statusOf = async (): Promise<string | undefined> => (await getSession())?.status;
+export async function ensureScannable(session: string): Promise<string> {
+  const statusOf = async (): Promise<string | undefined> => (await getSession(session))?.status;
   let st = await statusOf();
   if (st === 'WORKING' || st === 'SCAN_QR_CODE') return st;
 
   try {
-    await restartSession();
+    await restartSession(session);
   } catch {
     /* ignore */
   }
@@ -229,19 +230,19 @@ export async function ensureScannable(): Promise<string> {
 
   // Full recovery — clears stale credentials that keep the engine looping.
   try {
-    await stopSession();
+    await stopSession(session);
   } catch {
     /* ignore */
   }
   await sleep(1500);
   try {
-    await logoutSession();
+    await logoutSession(session);
   } catch {
     /* ignore */
   }
   await sleep(1500);
   try {
-    await startSession();
+    await startSession(session);
   } catch {
     /* ignore */
   }
@@ -254,24 +255,34 @@ export async function ensureScannable(): Promise<string> {
 }
 
 /**
- * Ensure the session exists, is started, and is configured to POST webhooks to
- * our public URL. Uses the modern WAHA sessions API (create-or-update).
+ * Ensure the session exists and is started. Uses the modern WAHA sessions API
+ * (create-or-update). With `webhookUrl` it also configures per-session webhooks
+ * (WAHA_AUTOREGISTER mode); without it the session relies on WAHA's global
+ * WHATSAPP_HOOK_URL, which applies to every session — the recommended setup.
  * If the session isn't authenticated yet, the caller should surface the QR code.
  */
-export async function ensureSession(webhookUrl: string): Promise<WahaSessionInfo | null> {
+export async function ensureSession(
+  session: string,
+  webhookUrl?: string,
+): Promise<WahaSessionInfo | null> {
   const body = {
-    name: config.WAHA_SESSION,
+    name: session,
     start: true,
-    config: {
-      webhooks: [
-        {
-          url: webhookUrl,
-          // 'message' = incoming; 'message.any' also fires for outgoing, so we
-          // can catch a manager replying manually and auto-pause the bot.
-          events: ['message', 'message.any'],
-        },
-      ],
-    },
+    ...(webhookUrl
+      ? {
+          config: {
+            webhooks: [
+              {
+                url: webhookUrl,
+                // 'message' = incoming; 'message.any' also fires for outgoing, so
+                // we can catch a manager replying manually and auto-pause the bot.
+                // 'session.status' lets us announce when a company gets connected.
+                events: ['message', 'message.any', 'session.status'],
+              },
+            ],
+          },
+        }
+      : {}),
   };
 
   // Try to create; if it already exists, update it instead.
@@ -283,12 +294,12 @@ export async function ensureSession(webhookUrl: string): Promise<WahaSessionInfo
   } catch {
     try {
       return await postJson<WahaSessionInfo>(
-        url(`/api/sessions/${config.WAHA_SESSION}`),
-        { config: body.config },
+        url(`/api/sessions/${session}`),
+        'config' in body ? { config: body.config } : {},
         { headers: headers(), retries: 1 },
       );
     } catch (err2) {
-      logger.warn({ err: (err2 as Error).message }, 'ensureSession update failed');
+      logger.warn({ err: (err2 as Error).message, session }, 'ensureSession update failed');
       return null;
     }
   }
@@ -299,9 +310,9 @@ export async function ensureSession(webhookUrl: string): Promise<WahaSessionInfo
  * (we forward it to Telegram on startup when the session isn't connected).
  * Returns null if the QR isn't available (already authenticated, or WAHA down).
  */
-export async function fetchQrImage(): Promise<Uint8Array | null> {
+export async function fetchQrImage(session: string): Promise<Uint8Array | null> {
   try {
-    const res = await httpFetch(url(`/api/${config.WAHA_SESSION}/auth/qr?format=image`), {
+    const res = await httpFetch(url(`/api/${session}/auth/qr?format=image`), {
       method: 'GET',
       headers: { ...headers(), Accept: 'image/png' },
       retries: 1,
@@ -310,7 +321,7 @@ export async function fetchQrImage(): Promise<Uint8Array | null> {
     if (!res.ok) return null;
     return new Uint8Array(await res.arrayBuffer());
   } catch (err) {
-    logger.debug({ err: (err as Error).message }, 'fetchQrImage failed');
+    logger.debug({ err: (err as Error).message, session }, 'fetchQrImage failed');
     return null;
   }
 }
@@ -423,6 +434,6 @@ export function parseManagerReply(envelope: WahaWebhookEnvelope): ManagerReply |
   if (!p || p.fromMe !== true) return null;
   const to = typeof p.to === 'string' ? p.to : '';
   if (!to || isGroupChat(to) || isSystemChat(to)) return null;
-  if (looksLikeBotSend(p)) return null; // our own send, not a human manager
+  if (looksLikeBotSend(envelope.session, p)) return null; // our own send, not a human manager
   return { chatId: to, phone: to.split('@')[0]?.replace(/\D/g, '') ?? '' };
 }
